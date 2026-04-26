@@ -4,25 +4,6 @@
 
 QuantAgent is a terminal UI application that lets you chat with an AI agent to analyze stocks, backtest strategies, optimize portfolios, and screen markets — all backed by live data and rigorous quantitative methods.
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│  QuantAgent  v0.1.0                                         │
-│  Model: anthropic:claude-sonnet-4-6  Provider: yfinance    │
-│                                                             │
-│  User:  What's the outlook for AAPL?                        │
-│  Agent: Fetching data...                                    │
-│         ┌─ get_stock_quote(AAPL)                            │
-│         ├─ compute_technical_indicators(AAPL)               │
-│         ├─ run_backtest(AAPL, sma_crossover)                │
-│         └─ ...                                              │
-│                                                             │
-│  [Bullish | Conviction: 7/10]                               │
-│  Entry: $182  Target: $210  Stop: $170                      │
-│                                                             │
-│  > _                                                        │
-└─────────────────────────────────────────────────────────────┘
-```
-
 ## Features
 
 - **Conversational Analysis** — Ask natural language questions about any stock or portfolio. The agent plans multi-step analyses and ends with a clear stance, conviction score, and actionable levels.
@@ -45,8 +26,8 @@ QuantAgent is a terminal UI application that lets you chat with an AI agent to a
 
 ```bash
 # Clone the repository
-git clone https://github.com/yourusername/quantagent.git
-cd quantagent
+git clone git@github.com:zawmyohtet/quant-agent.git
+cd quant-agent
 
 # Create virtual environment and install dependencies
 uv sync
