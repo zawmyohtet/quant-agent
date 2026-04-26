@@ -1,0 +1,31 @@
+Screen {
+    layout: vertical;
+}
+
+MessageView {
+    height: 1fr;
+    overflow-y: auto;
+    padding: 0 2;
+}
+
+StatusBar {
+    height: 1;
+    background: $surface;
+    color: $text-muted;
+    padding: 0 2;
+}
+
+ChatInput {
+    height: auto;
+    max-height: 6;
+    border-top: solid $border;
+    padding: 0 2;
+}
+
+#chat-input-dropdown {
+    display: none;
+    height: auto;
+    max-height: 8;
+    border: solid $primary;
+    background: $surface;
+}
