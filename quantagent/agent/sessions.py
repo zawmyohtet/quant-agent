@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import sqlite3
 from pathlib import Path
 
 import aiosqlite
@@ -33,16 +34,22 @@ async def list_threads(db_path: Path = DB_PATH) -> list[dict]:
     """Return all stored threads ordered by creation time (newest first)."""
     if not db_path.exists():
         return []
-    async with aiosqlite.connect(str(db_path)) as db:
-        db.row_factory = aiosqlite.Row
-        async with db.execute("SELECT * FROM threads ORDER BY created_at DESC") as cursor:
-            rows = await cursor.fetchall()
-            return [dict(row) for row in rows]
+    try:
+        async with aiosqlite.connect(str(db_path)) as db:
+            db.row_factory = aiosqlite.Row
+            async with db.execute("SELECT * FROM threads ORDER BY created_at DESC") as cursor:
+                rows = await cursor.fetchall()
+                return [dict(row) for row in rows]
+    except sqlite3.OperationalError:
+        return []
 
 
 async def delete_thread(thread_id: str, db_path: Path = DB_PATH) -> None:
     """Remove a thread from the database."""
     db_path.parent.mkdir(parents=True, exist_ok=True)
-    async with aiosqlite.connect(str(db_path)) as db:
-        await db.execute("DELETE FROM threads WHERE id = ?", (thread_id,))
-        await db.commit()
+    try:
+        async with aiosqlite.connect(str(db_path)) as db:
+            await db.execute("DELETE FROM threads WHERE id = ?", (thread_id,))
+            await db.commit()
+    except sqlite3.OperationalError:
+        pass
