@@ -1,0 +1,135 @@
+name: Release
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  bump-version-and-tag:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.final_version.outputs.version }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+        with:
+          version: "0.5.x"
+
+      - name: Set up Python
+        run: uv python install
+
+      - name: Get current version
+        id: current_version
+        run: |
+          VERSION=$(grep -oP '(?<=^version = ")[^"]+' pyproject.toml)
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+
+      - name: Check if tag exists
+        id: tag_check
+        run: |
+          if git tag -l "v${{ steps.current_version.outputs.version }}" | grep -q "v${{ steps.current_version.outputs.version }}"; then
+            echo "exists=true" >> $GITHUB_OUTPUT
+          else
+            echo "exists=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Bump patch version
+        if: steps.tag_check.outputs.exists == 'true'
+        run: |
+          python -c "
+          import re
+          with open('pyproject.toml', 'r') as f:
+            content = f.read()
+          version = '${{ steps.current_version.outputs.version }}'
+          major, minor, patch = map(int, version.split('.'))
+          patch += 1
+          new_version = f'{major}.{minor}.{patch}'
+          content = content.replace(f'version = \"{version}\"', f'version = \"{new_version}\"')
+          with open('pyproject.toml', 'w') as f:
+            f.write(content)
+          print(f'Bumped version to {new_version}')
+          "
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add pyproject.toml
+          git commit -m "chore(release): bump version to v$(grep -oP '(?<=^version = \")[^\"]+' pyproject.toml)"
+          git push
+
+      - name: Get final version
+        id: final_version
+        run: |
+          VERSION=$(grep -oP '(?<=^version = ")[^"]+' pyproject.toml)
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+
+      - name: Create and push tag
+        run: |
+          git tag "v${{ steps.final_version.outputs.version }}"
+          git push origin "v${{ steps.final_version.outputs.version }}"
+
+  build-binary:
+    needs: bump-version-and-tag
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: v${{ needs.bump-version-and-tag.outputs.version }}
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+        with:
+          version: "0.5.x"
+
+      - name: Set up Python
+        run: uv python install
+
+      - name: Install dependencies
+        run: uv sync --all-groups
+
+      - name: Build standalone binary
+        run: uv run python scripts/build_binary.py
+
+      - name: Rename binary with platform
+        run: |
+          if [ "${{ matrix.os }}" = "macos-latest" ]; then
+            mv dist/quantagent dist/quantagent-macos
+          else
+            mv dist/quantagent dist/quantagent-linux
+          fi
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: quantagent-${{ matrix.os }}
+          path: dist/quantagent-*
+
+  create-release:
+    needs: [bump-version-and-tag, build-binary]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ needs.bump-version-and-tag.outputs.version }}
+          name: QuantAgent v${{ needs.bump-version-and-tag.outputs.version }}
+          generate_release_notes: true
+          files: |
+            artifacts/quantagent-ubuntu-latest/quantagent-linux
+            artifacts/quantagent-macos-latest/quantagent-macos

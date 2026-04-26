@@ -24,6 +24,24 @@ QuantAgent is a terminal UI application that lets you chat with an AI agent to a
 
 ### Install
 
+#### Standalone Binary (macOS / Linux)
+
+Download the latest release for your platform — no Python or `uv` required.
+
+```bash
+# macOS
+curl -L -o quantagent https://github.com/zawmyohtet/quant-agent/releases/latest/download/quantagent-macos
+chmod +x quantagent
+sudo mv quantagent /usr/local/bin/
+
+# Linux
+curl -L -o quantagent https://github.com/zawmyohtet/quant-agent/releases/latest/download/quantagent-linux
+chmod +x quantagent
+sudo mv quantagent /usr/local/bin/
+```
+
+#### From Source
+
 ```bash
 # Clone the repository
 git clone git@github.com:zawmyohtet/quant-agent.git
