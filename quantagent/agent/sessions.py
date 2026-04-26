@@ -42,6 +42,7 @@ async def list_threads(db_path: Path = DB_PATH) -> list[dict]:
 
 async def delete_thread(thread_id: str, db_path: Path = DB_PATH) -> None:
     """Remove a thread from the database."""
+    db_path.parent.mkdir(parents=True, exist_ok=True)
     async with aiosqlite.connect(str(db_path)) as db:
         await db.execute("DELETE FROM threads WHERE id = ?", (thread_id,))
         await db.commit()
