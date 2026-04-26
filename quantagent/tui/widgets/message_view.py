@@ -55,11 +55,10 @@ class MessageView(ScrollableContainer):
             self._update_dom(entry)
 
     def add_tool_call(self, call_id: str, tool_name: str, args: dict) -> None:
-        summary = ", ".join(f'{k}="{v}"' for k, v in args.items())
         entry = _MessageEntry(
             message_id=call_id,
             kind="tool_start",
-            content=f"─ {tool_name}({summary})…",
+            content=f"● {tool_name} — running…",
             metadata={"tool_name": tool_name, "args": args, "result": None},
         )
         self._append_entry(entry)
@@ -69,8 +68,7 @@ class MessageView(ScrollableContainer):
         if entry:
             entry.metadata["result"] = result
             entry.kind = "tool_done"
-            preview = result[:120].replace("\n", " ")
-            entry.content = f"{entry.content.rstrip('…')} → {preview}"
+            entry.content = f"✓ {entry.metadata['tool_name']} — done"
             self._update_dom(entry)
 
     def add_system_message(self, text: str) -> None:

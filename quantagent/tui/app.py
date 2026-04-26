@@ -125,6 +125,7 @@ class QuantAgentApp(App):
 
         elif isinstance(event, ToolCallStarted):
             messages.add_tool_call(event.call_id, event.tool_name, event.args)
+            messages._agent_buffer_id = None
 
         elif isinstance(event, ToolCallCompleted):
             messages.complete_tool_call(event.call_id, event.result)
