@@ -51,6 +51,9 @@ class AgentRunner:
         self._current_task: asyncio.Task | None = None
         self._approval_future: asyncio.Future[bool] | None = None
         self._pending_interrupts: dict[str, Any] = {}
+        self._turn_input_tokens = 0
+        self._turn_output_tokens = 0
+        self._turn_total_tokens: int | None = None
 
     async def start(self) -> None:
         """Initialize the agent graph and start the event consumer."""
@@ -113,6 +116,9 @@ class AgentRunner:
         tool_call_buffers: dict[str | int, dict[str, Any]] = {}
         displayed_tool_ids: set[str] = set()
         active_message_started = False
+        self._turn_input_tokens = 0
+        self._turn_output_tokens = 0
+        self._turn_total_tokens = None
 
         try:
             while True:
@@ -176,7 +182,13 @@ class AgentRunner:
                             continue
 
                         if hasattr(message, "usage_metadata") and message.usage_metadata:
-                            pass
+                            usage = message.usage_metadata
+                            total = usage.get("total_tokens")
+                            if total is not None and total > 0:
+                                self._turn_total_tokens = total
+                            else:
+                                self._turn_input_tokens += usage.get("input_tokens", 0)
+                                self._turn_output_tokens += usage.get("output_tokens", 0)
 
                         if not hasattr(message, "content_blocks"):
                             if (
@@ -295,6 +307,11 @@ class AgentRunner:
                     continue
 
                 break
+
+            if self._turn_total_tokens is not None:
+                self.state.token_count += self._turn_total_tokens
+            elif self._turn_input_tokens or self._turn_output_tokens:
+                self.state.token_count += self._turn_input_tokens + self._turn_output_tokens
 
         except asyncio.CancelledError:
             raise
