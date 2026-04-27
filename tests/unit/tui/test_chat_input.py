@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Any
+
 import pytest
 
 from quantagent.tui.widgets.chat_input import ChatInput
@@ -72,6 +74,43 @@ class TestChatInputDropdown:
         widget._update_dropdown("/h")
         assert widget._dropdown.display is True
         assert any(getattr(item, "command_name", "") == "help" for item in widget._dropdown.children)
+
+
+class TestChatInputAutocomplete:
+    """Unit tests for ChatInput autocomplete application."""
+
+    async def test_apply_autocomplete_moves_cursor_to_end(self) -> None:
+        from textual.app import App
+
+        class _App(App[None]):
+            def compose(self) -> Any:
+                yield ChatInput()
+
+        app = _App()
+        async with app.run_test():
+            widget = app.query_one(ChatInput)
+            # Simulate user having typed "/ana" (cursor lands at end after first value set)
+            widget._input.value = "/ana"
+            assert widget._input.cursor_position == 4
+            widget._apply_autocomplete("analyze")
+            assert widget._input.value == "/analyze "
+            assert widget._input.cursor_position == len("/analyze ")
+
+    async def test_apply_autocomplete_keeps_cursor_at_end_after_focus(self) -> None:
+        from textual.app import App
+
+        class _App(App[None]):
+            def compose(self) -> Any:
+                yield ChatInput()
+
+        app = _App()
+        async with app.run_test():
+            widget = app.query_one(ChatInput)
+            widget._input.value = "/sc"
+            assert widget._input.cursor_position == 3
+            widget._apply_autocomplete("screen")
+            assert widget._input.value == "/screen "
+            assert widget._input.cursor_position == len("/screen ")
 
 
 class TestChatInputWidget:

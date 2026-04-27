@@ -84,9 +84,14 @@ class ChatInput(Vertical):
     def on_list_view_selected(self, event: ListView.Selected) -> None:
         item = event.item
         if hasattr(item, "command_name"):
-            self._input.value = f"/{item.command_name} "
-            self._input.focus()
+            self._apply_autocomplete(item.command_name)
         self._dropdown.display = False
+
+    def _apply_autocomplete(self, command_name: str) -> None:
+        """Insert the completed command and move cursor to the end."""
+        self._input.value = f"/{command_name} "
+        self._input.focus()
+        self._input.cursor_position = len(self._input.value)
 
     def _update_dropdown(self, text: str) -> None:
         parts = text[1:].split()
@@ -115,12 +120,10 @@ class ChatInput(Vertical):
             return
         selected = self._dropdown.highlighted_child
         if selected and hasattr(selected, "command_name"):
-            self._input.value = f"/{selected.command_name} "
-            self._input.focus()
+            self._apply_autocomplete(selected.command_name)
             self._dropdown.display = False
         elif self._dropdown.children:
             first = self._dropdown.children[0]
             if hasattr(first, "command_name"):
-                self._input.value = f"/{first.command_name} "
-                self._input.focus()
+                self._apply_autocomplete(first.command_name)
                 self._dropdown.display = False
