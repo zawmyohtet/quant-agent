@@ -11,6 +11,7 @@ class StatusBar(Static):
     """One-line footer showing current session state."""
 
     def __init__(self, state: SessionState, **kwargs: Any) -> None:
+        kwargs.setdefault("markup", True)
         super().__init__(**kwargs)
         self.state = state
 
@@ -23,4 +24,7 @@ class StatusBar(Static):
         provider = self.state.config.provider
         thread = self.state.thread_id[:8] if self.state.thread_id else "none"
         tokens = f"{self.state.token_count:,}t"
-        self.update(f"model: {model} | provider: {provider} | thread: #{thread} | {tokens}")
+        base = f"model: {model} | provider: {provider} | thread: #{thread} | {tokens}"
+        if self.state.is_running:
+            base += " | [dim blink]●[/dim blink] Running...  [dim]esc interrupt[/dim]"
+        self.update(base)
