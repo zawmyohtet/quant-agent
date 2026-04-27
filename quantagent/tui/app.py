@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 from datetime import UTC, datetime
 from pathlib import Path
@@ -94,8 +95,16 @@ class QuantAgentApp(App):
         )
 
     async def on_unmount(self) -> None:
+        # Cancel any active agent workers first so network I/O tasks
+        # receive cancellation and the event loop can close cleanly.
+        self.workers.cancel_all()
+        await self.workers.wait_for_complete(timeout=5.0)
+
         if self._event_consumer and not self._event_consumer.done():
             self._event_consumer.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._event_consumer
+
         if self.runner:
             await self.runner.shutdown()
 

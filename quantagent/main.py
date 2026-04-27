@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import contextlib
+
 import typer
 
 from quantagent.tui.app import QuantAgentApp
@@ -23,7 +25,8 @@ def run(
         config.provider = provider
     if thread:
         config.thread_id = thread
-    QuantAgentApp(config=config).run()
+    with contextlib.suppress(KeyboardInterrupt):
+        QuantAgentApp(config=config).run()
 
 
 if __name__ == "__main__":
