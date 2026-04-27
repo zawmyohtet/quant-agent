@@ -85,7 +85,11 @@ class ChatInput(Vertical):
         self._dropdown.display = False
 
     def _update_dropdown(self, text: str) -> None:
-        prefix = text[1:].lower()
+        parts = text[1:].split()
+        if not parts:
+            self._dropdown.display = False
+            return
+        prefix = parts[0].lower()
         matches = [
             cmd
             for cmd in REGISTRY
