@@ -72,3 +72,11 @@ class TestChatInputDropdown:
         widget._update_dropdown("/h")
         assert widget._dropdown.display is True
         assert any(getattr(item, "command_name", "") == "help" for item in widget._dropdown.children)
+
+
+class TestChatInputWidget:
+    """Unit tests for ChatInput widget configuration."""
+
+    def test_input_does_not_select_on_focus(self) -> None:
+        widget = ChatInput()
+        assert widget._input.select_on_focus is False

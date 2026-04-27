@@ -38,7 +38,11 @@ class ChatInput(Vertical):
 
     def __init__(self, **kwargs: Any) -> None:
         super().__init__(**kwargs)
-        self._input = Input(placeholder="Type a message or /help", id="chat-input-field")
+        self._input = Input(
+            placeholder="Type a message or /help",
+            id="chat-input-field",
+            select_on_focus=False,
+        )
         self._dropdown = ListView(id="chat-input-dropdown")
         self._dropdown.display = False
 
