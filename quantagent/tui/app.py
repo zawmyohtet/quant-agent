@@ -98,7 +98,7 @@ class QuantAgentApp(App):
         # Cancel any active agent workers first so network I/O tasks
         # receive cancellation and the event loop can close cleanly.
         self.workers.cancel_all()
-        await self.workers.wait_for_complete(timeout=5.0)
+        await self.workers.wait_for_complete()
 
         if self._event_consumer and not self._event_consumer.done():
             self._event_consumer.cancel()
