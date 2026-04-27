@@ -23,11 +23,12 @@ def app() -> QuantAgentApp:
 
 class TestAppWiring:
     @pytest.mark.asyncio
-    async def test_submit_user_message_sets_running_and_refreshes_status(
+    async def test_submit_user_message_sets_running_and_refreshes_status_and_footer(
         self, app: QuantAgentApp
     ) -> None:
         mock_messages = MagicMock()
         mock_status = MagicMock()
+        mock_footer = MagicMock()
         app.state.is_running = False
         app.runner = MagicMock()
         with (
@@ -37,6 +38,7 @@ class TestAppWiring:
                 side_effect=lambda selector, _: {
                     "#messages": mock_messages,
                     "#status-bar": mock_status,
+                    "#chat-footer": mock_footer,
                 }[selector],
             ),
             patch.object(app, "run_worker") as mock_run_worker,
@@ -45,6 +47,7 @@ class TestAppWiring:
             assert app.state.is_running is True
             mock_messages.add_user_message.assert_called_once_with("hello")
             mock_status.refresh_state.assert_called_once()
+            mock_footer.refresh_state.assert_called_once()
             mock_run_worker.assert_called_once()
 
     @pytest.mark.asyncio
@@ -92,6 +95,7 @@ class TestAppWiring:
     ) -> None:
         mock_messages = MagicMock()
         mock_status = MagicMock()
+        mock_footer = MagicMock()
         app.state.is_running = True
         with patch.object(
             app,
@@ -99,11 +103,13 @@ class TestAppWiring:
             side_effect=lambda selector, _: {
                 "#messages": mock_messages,
                 "#status-bar": mock_status,
+                "#chat-footer": mock_footer,
             }[selector],
         ):
             await app._handle_event(AgentTurnComplete())
             assert app.state.is_running is False
             mock_status.refresh_state.assert_called_once()
+            mock_footer.refresh_state.assert_called_once()
 
     def test_action_cancel_agent_cancels_runner(self, app: QuantAgentApp) -> None:
         mock_messages = MagicMock()

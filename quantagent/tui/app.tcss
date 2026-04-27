@@ -20,14 +20,25 @@ StatusBar {
     color: $text-muted;
 }
 
-#status-loading {
-    width: 1;
+ChatFooter {
+    height: 1;
+    background: $surface;
+    padding: 0 2;
+    margin-top: 1;
+}
+
+#footer-loading {
+    width: auto;
     color: $text-muted;
 }
 
-#status-hint {
-    color: $text-muted;
+#footer-spacer {
+    width: 1fr;
+}
+
+#footer-hint {
     width: auto;
+    color: $text-muted;
 }
 
 ChatInput {

@@ -23,6 +23,7 @@ from quantagent.adapter.runner import AgentRunner
 from quantagent.tui.config import QuantAgentConfig
 from quantagent.tui.session_state import SessionState
 from quantagent.tui.widgets.approval_dialog import ApprovalDialog
+from quantagent.tui.widgets.chat_footer import ChatFooter
 from quantagent.tui.widgets.chat_input import ChatInput
 from quantagent.tui.widgets.message_view import MessageView
 from quantagent.tui.widgets.status_bar import StatusBar
@@ -71,6 +72,7 @@ class QuantAgentApp(App):
         yield MessageView(id="messages")
         yield StatusBar(self.state, id="status-bar")
         yield ChatInput(id="chat-input")
+        yield ChatFooter(self.state, id="chat-footer")
 
     async def on_mount(self) -> None:
         self.runner = AgentRunner(self.state)
@@ -150,6 +152,9 @@ class QuantAgentApp(App):
             status = self.query_one("#status-bar", StatusBar)
             if hasattr(status, "refresh_state"):
                 status.refresh_state()
+            footer = self.query_one("#chat-footer", ChatFooter)
+            if hasattr(footer, "refresh_state"):
+                footer.refresh_state()
 
         elif isinstance(event, ApprovalRequest):
             await self._handle_approval_request(event)
@@ -193,6 +198,9 @@ class QuantAgentApp(App):
         status = self.query_one("#status-bar", StatusBar)
         if hasattr(status, "refresh_state"):
             status.refresh_state()
+        footer = self.query_one("#chat-footer", ChatFooter)
+        if hasattr(footer, "refresh_state"):
+            footer.refresh_state()
         if self.runner:
             self.run_worker(self.runner.run_turn(text), exclusive=True)
 
@@ -203,6 +211,7 @@ class QuantAgentApp(App):
         self.state.new_thread()
         self.query_one("#messages", MessageView).clear()
         self.query_one("#status-bar", StatusBar).refresh_state()
+        self.query_one("#chat-footer", ChatFooter).refresh_state()
         self.query_one("#messages", MessageView).add_system_message("Started new thread.")
 
     def action_clear_messages(self) -> None:
