@@ -73,6 +73,8 @@ class ChatInput(Vertical):
             event.stop()
             self._autocomplete()
         elif event.key == "escape":
+            if self._dropdown.display:
+                event.stop()
             self._dropdown.display = False
         elif event.key == "down" and self._dropdown.display:
             event.stop()

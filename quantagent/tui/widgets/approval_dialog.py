@@ -58,8 +58,10 @@ class ApprovalDialog(ModalScreen):
 
     def on_key(self, event: Key) -> None:
         if event.key in ("a", "A"):
+            event.stop()
             self._approve()
         elif event.key in ("r", "R") or event.key == "escape":
+            event.stop()
             self._reject()
 
     def on_button_pressed(self, event: Button.Pressed) -> None:

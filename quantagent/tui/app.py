@@ -57,7 +57,7 @@ class QuantAgentApp(App):
         ("ctrl+t", "open_threads", "Threads"),
         ("ctrl+n", "new_thread", "New thread"),
         ("ctrl+l", "clear_messages", "Clear"),
-        ("escape", "cancel_agent", "Cancel"),
+        ("escape", "cancel_agent", "Interrupt"),
     ]
 
     def __init__(self, config: QuantAgentConfig, **kwargs: Any) -> None:
@@ -126,6 +126,7 @@ class QuantAgentApp(App):
         messages = self.query_one("#messages", MessageView)
 
         if isinstance(event, AgentTextChunk):
+            messages.hide_thinking_if_present()
             if messages._agent_buffer_id:
                 messages.append_to_agent_message(messages._agent_buffer_id, event.chunk)
             else:
@@ -133,6 +134,7 @@ class QuantAgentApp(App):
                 messages.append_to_agent_message(mid, event.chunk)
 
         elif isinstance(event, ToolCallStarted):
+            messages.hide_thinking_if_present()
             messages.add_tool_call(event.call_id, event.tool_name, event.args)
             messages._agent_buffer_id = None
 
@@ -140,6 +142,7 @@ class QuantAgentApp(App):
             messages.complete_tool_call(event.call_id, event.result)
 
         elif isinstance(event, AgentError):
+            messages.hide_thinking_if_present()
             messages.add_error_message(event.message, retryable=event.retryable)
 
         elif isinstance(event, SystemNotification):
@@ -147,6 +150,7 @@ class QuantAgentApp(App):
 
         elif isinstance(event, AgentTurnComplete):
             self.state.is_running = False
+            messages.hide_thinking_if_present()
             status = self.query_one("#status-bar", StatusBar)
             if hasattr(status, "refresh_state"):
                 status.refresh_state()
@@ -185,8 +189,14 @@ class QuantAgentApp(App):
         await dispatch(raw, app=self)
 
     async def _submit_user_message(self, text: str) -> None:
+        if self.state.is_running:
+            return
         messages = self.query_one("#messages", MessageView)
         messages.add_user_message(text)
+        messages.show_thinking()
+        status = self.query_one("#status-bar", StatusBar)
+        if hasattr(status, "refresh_state"):
+            status.refresh_state()
         if self.runner:
             self.run_worker(self.runner.run_turn(text), exclusive=True)
 
@@ -203,6 +213,9 @@ class QuantAgentApp(App):
         self.query_one("#messages", MessageView).clear()
 
     def action_cancel_agent(self) -> None:
+        messages = self.query_one("#messages", MessageView)
+        if messages._thinking_id is not None:
+            messages.hide_thinking_if_present()
         if self.runner:
             self.runner.cancel()
-        self.query_one("#messages", MessageView).add_system_message("Agent turn cancelled.")
+        messages.add_system_message("Agent turn cancelled.")
