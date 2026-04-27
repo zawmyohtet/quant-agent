@@ -126,7 +126,6 @@ class QuantAgentApp(App):
         messages = self.query_one("#messages", MessageView)
 
         if isinstance(event, AgentTextChunk):
-            messages.hide_thinking_if_present()
             if messages._agent_buffer_id:
                 messages.append_to_agent_message(messages._agent_buffer_id, event.chunk)
             else:
@@ -134,7 +133,6 @@ class QuantAgentApp(App):
                 messages.append_to_agent_message(mid, event.chunk)
 
         elif isinstance(event, ToolCallStarted):
-            messages.hide_thinking_if_present()
             messages.add_tool_call(event.call_id, event.tool_name, event.args)
             messages._agent_buffer_id = None
 
@@ -142,7 +140,6 @@ class QuantAgentApp(App):
             messages.complete_tool_call(event.call_id, event.result)
 
         elif isinstance(event, AgentError):
-            messages.hide_thinking_if_present()
             messages.add_error_message(event.message, retryable=event.retryable)
 
         elif isinstance(event, SystemNotification):
@@ -150,7 +147,6 @@ class QuantAgentApp(App):
 
         elif isinstance(event, AgentTurnComplete):
             self.state.is_running = False
-            messages.hide_thinking_if_present()
             status = self.query_one("#status-bar", StatusBar)
             if hasattr(status, "refresh_state"):
                 status.refresh_state()
@@ -193,7 +189,7 @@ class QuantAgentApp(App):
             return
         messages = self.query_one("#messages", MessageView)
         messages.add_user_message(text)
-        messages.show_thinking()
+        self.state.is_running = True
         status = self.query_one("#status-bar", StatusBar)
         if hasattr(status, "refresh_state"):
             status.refresh_state()
@@ -214,8 +210,6 @@ class QuantAgentApp(App):
 
     def action_cancel_agent(self) -> None:
         messages = self.query_one("#messages", MessageView)
-        if messages._thinking_id is not None:
-            messages.hide_thinking_if_present()
         if self.runner:
             self.runner.cancel()
         messages.add_system_message("Agent turn cancelled.")

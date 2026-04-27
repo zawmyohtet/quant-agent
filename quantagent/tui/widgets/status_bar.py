@@ -26,5 +26,5 @@ class StatusBar(Static):
         tokens = f"{self.state.token_count:,}t"
         base = f"model: {model} | provider: {provider} | thread: #{thread} | {tokens}"
         if self.state.is_running:
-            base += " | [dim blink]●[/dim blink] Running...  [dim]esc interrupt[/dim]"
+            base += " | [dim blink]●[/] Running...  [dim]esc interrupt[/]"
         self.update(base)
