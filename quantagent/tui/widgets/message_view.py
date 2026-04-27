@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any
 
 from rich.console import RenderableType
@@ -22,7 +22,7 @@ class _MessageEntry:
     kind: str
     content: str
     metadata: dict[str, Any] = field(default_factory=dict)
-    timestamp: datetime = field(default_factory=datetime.utcnow)
+    timestamp: datetime = field(default_factory=lambda: datetime.now(UTC))
 
 
 class MessageView(ScrollableContainer):
@@ -98,6 +98,11 @@ class MessageView(ScrollableContainer):
         self._remove_entry(indicator_id)
         if self._thinking_id == indicator_id:
             self._thinking_id = None
+
+    def hide_thinking_if_present(self) -> None:
+        """Remove the active thinking indicator, if any."""
+        if self._thinking_id is not None:
+            self.hide_thinking(self._thinking_id)
 
     def clear(self) -> None:
         self._all_entries.clear()
@@ -188,5 +193,5 @@ class MessageView(ScrollableContainer):
         if entry.kind in ("tool_start", "tool_done"):
             return Text.from_markup(f"[dim]{entry.content}[/]")
         if entry.kind == "thinking":
-            return Text.from_markup(f"[dim]{entry.content}[/]")
+            return Text.from_markup("[dim blink]● ● ●[/dim blink]")
         return Text(entry.content)
