@@ -94,10 +94,10 @@ quantagent/
 │
 └── quantagent/
     ├── main.py             # Typer CLI entrypoint
-    ├── tui/                # Part 1 — Terminal UI
-    ├── tools/              # Part 2a — Quant analysis functions
-    ├── agent/              # Part 2b — LangGraph agent + skills + middleware
-    └── adapter/            # Part 3 — Agent ↔ TUI bridge
+    ├── tui/                # Terminal UI
+    ├── tools/              # Quant analysis functions
+    ├── agent/              # LangGraph agent + skills + middleware
+    └── adapter/            # Agent ↔ TUI bridge
 ```
 
 ---
@@ -279,10 +279,11 @@ uv run pytest tests/snapshot/                    # assert against saved snapshot
 - **Snapshot tests** (Textual visual regression) go in `tests/snapshot/`.
 - Use `pytest-asyncio` with `@pytest.mark.asyncio` for all async tests.
 - Mock the data provider for all unit tests — never make real API calls in tests.
-  Use `unittest.mock.AsyncMock` for async provider methods.
+- Use `unittest.mock.AsyncMock` for async provider methods.
 - Backtest tests must use deterministic synthetic OHLCV data (fixed random seed).
 - Every `AgentEvent` type must have at least one construction test in `tests/unit/adapter/test_events.py`.
 - Test file names must mirror source file names exactly.
+- Always clean irrelevant tests if the implementation is changed
 
 ### Coverage requirements
 - `tools/`: minimum 85% line coverage

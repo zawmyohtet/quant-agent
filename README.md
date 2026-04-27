@@ -1,5 +1,14 @@
 # QuantAgent
 
+[![CI](https://github.com/zawmyohtet/quant-agent/actions/workflows/ci.yml/badge.svg)](https://github.com/zawmyohtet/quant-agent/actions/workflows/ci.yml)
+[![Ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json)](https://github.com/astral-sh/ruff)
+[![Type Check](https://img.shields.io/badge/mypy-typed-blue)](https://github.com/python/mypy)
+[![SonarCloud](https://sonarcloud.io/api/project_badges/measure?project=zawmyohtet_quant-agent&metric=alert_status)](https://sonarcloud.io/dashboard?id=zawmyohtet_quant-agent)
+[![Coverage](https://sonarcloud.io/api/project_badges/measure?project=zawmyohtet_quant-agent&metric=coverage)](https://sonarcloud.io/dashboard?id=zawmyohtet_quant-agent)
+[![Vulnerability](https://sonarcloud.io/api/project_badges/measure?project=zawmyohtet_quant-agent&metric=vulnerabilities)](https://sonarcloud.io/dashboard?id=zawmyohtet_quant-agent)
+[![Maintainability](https://sonarcloud.io/api/project_badges/measure?project=zawmyohtet_quant-agent&metric=sqale_rating)](https://sonarcloud.io/dashboard?id=zawmyohtet_quant-agent)
+[![Security Hotspots](https://sonarcloud.io/api/project_badges/measure?project=zawmyohtet_quant-agent&metric=security_rating)](https://sonarcloud.io/dashboard?id=zawmyohtet_quant-agent)
+
 > Your AI quant analyst in the terminal.
 
 QuantAgent is a terminal UI application that lets you chat with an AI agent to analyze stocks, backtest strategies, optimize portfolios, and screen markets — all backed by live data and rigorous quantitative methods.
