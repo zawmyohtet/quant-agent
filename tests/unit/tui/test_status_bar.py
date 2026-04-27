@@ -1,8 +1,6 @@
 """Tests for StatusBar."""
 from __future__ import annotations
 
-from rich.text import Text
-
 from quantagent.tui.config import QuantAgentConfig
 from quantagent.tui.session_state import SessionState
 from quantagent.tui.widgets.status_bar import StatusBar
