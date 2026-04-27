@@ -11,8 +11,22 @@ MessageView {
 StatusBar {
     height: 1;
     background: $surface;
-    color: $text-muted;
     padding: 0 2;
+}
+
+#status-info {
+    width: 100%;
+    color: $text-muted;
+}
+
+#status-loading {
+    width: 1;
+    color: $text-muted;
+}
+
+#status-hint {
+    color: $text-muted;
+    width: auto;
 }
 
 ChatInput {

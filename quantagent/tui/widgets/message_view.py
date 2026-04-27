@@ -33,7 +33,6 @@ class MessageView(ScrollableContainer):
         self._all_entries: list[_MessageEntry] = []
         self._dom_map: dict[str, Static] = {}
         self._agent_buffer_id: str | None = None
-        self._thinking_id: str | None = None
 
     # -- Public API ----------------------------------------------------------
 
@@ -87,28 +86,10 @@ class MessageView(ScrollableContainer):
         )
         self._append_entry(entry)
 
-    def show_thinking(self) -> str:
-        mid = self._new_id()
-        entry = _MessageEntry(message_id=mid, kind="thinking", content="● ● ●")
-        self._append_entry(entry)
-        self._thinking_id = mid
-        return mid
-
-    def hide_thinking(self, indicator_id: str) -> None:
-        self._remove_entry(indicator_id)
-        if self._thinking_id == indicator_id:
-            self._thinking_id = None
-
-    def hide_thinking_if_present(self) -> None:
-        """Remove the active thinking indicator, if any."""
-        if self._thinking_id is not None:
-            self.hide_thinking(self._thinking_id)
-
     def clear(self) -> None:
         self._all_entries.clear()
         self._dom_map.clear()
         self._agent_buffer_id = None
-        self._thinking_id = None
         for child in list(self.children):
             child.remove()
 
@@ -192,6 +173,4 @@ class MessageView(ScrollableContainer):
             return Text.from_markup(entry.content)
         if entry.kind in ("tool_start", "tool_done"):
             return Text.from_markup(f"[dim]{entry.content}[/]")
-        if entry.kind == "thinking":
-            return Text.from_markup("[dim blink]● ● ●[/dim blink]")
         return Text(entry.content)
