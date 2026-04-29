@@ -14,21 +14,20 @@ Key responsibilities:
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 from typing import Any
 
-from langchain_core.messages import AIMessageChunk, HumanMessage, ToolMessage
-
+from quantagent.adapter._interrupt_processing import (
+    _process_action_requests,
+    _process_single_interrupt,
+)
+from quantagent.adapter._stream_processing import _StreamProcessor, _TurnContext
 from quantagent.adapter.events import (
     AgentError,
     AgentEvent,
-    AgentTextChunk,
     AgentTurnComplete,
     ApprovalRequest,
     SystemNotification,
-    ToolCallCompleted,
-    ToolCallStarted,
 )
 from quantagent.agent.graph import create_quant_agent
 from quantagent.tui.session_state import SessionState
@@ -51,9 +50,6 @@ class AgentRunner:
         self._current_task: asyncio.Task | None = None
         self._approval_future: asyncio.Future[bool] | None = None
         self._pending_interrupts: dict[str, Any] = {}
-        self._turn_input_tokens = 0
-        self._turn_output_tokens = 0
-        self._turn_total_tokens: int | None = None
 
     async def start(self) -> None:
         """Initialize the agent graph and start the event consumer."""
@@ -109,193 +105,17 @@ class AgentRunner:
         config: dict[str, Any] = {
             "configurable": {"thread_id": self.state.thread_id},
         }
-
-        user_msg = {"role": "user", "content": user_message}
-        stream_input: dict[str, Any] = {"messages": [user_msg]}
-
-        tool_call_buffers: dict[str | int, dict[str, Any]] = {}
-        displayed_tool_ids: set[str] = set()
-        active_message_started = False
-        self._turn_input_tokens = 0
-        self._turn_output_tokens = 0
-        self._turn_total_tokens = None
+        stream_input: dict[str, Any] = {
+            "messages": [{"role": "user", "content": user_message}],
+        }
+        context = _TurnContext()
+        processor = _StreamProcessor(
+            self._agent, config, self._queue, self._pending_interrupts
+        )
 
         try:
             while True:
-                interrupt_occurred = False
-                self._pending_interrupts.clear()
-
-                async for chunk in self._agent.astream(
-                    stream_input,
-                    stream_mode=["messages", "updates"],
-                    subgraphs=True,
-                    config=config,
-                ):
-                    if not isinstance(chunk, tuple) or len(chunk) != 3:
-                        continue
-
-                    namespace, current_stream_mode, data = chunk
-                    ns_key = tuple(namespace) if namespace else ()
-                    is_main_agent = ns_key == ()
-
-                    if current_stream_mode == "updates":
-                        if not isinstance(data, dict):
-                            continue
-
-                        if "__interrupt__" in data:
-                            interrupts = data["__interrupt__"]
-                            for interrupt_obj in interrupts:
-                                iv = interrupt_obj.value
-                                if isinstance(iv, dict):
-                                    self._pending_interrupts[interrupt_obj.id] = {
-                                        "interrupt_obj": interrupt_obj,
-                                        "value": iv,
-                                    }
-                                    interrupt_occurred = True
-
-                    elif current_stream_mode == "messages":
-                        if not is_main_agent:
-                            continue
-
-                        if not isinstance(data, tuple) or len(data) != 2:
-                            continue
-
-                        message, metadata = data
-
-                        if isinstance(message, HumanMessage):
-                            continue
-
-                        if isinstance(message, ToolMessage):
-                            tool_call_id = getattr(message, "tool_call_id", "")
-                            content = message.content
-
-                            result_str = str(content) if content else ""
-                            await self._queue.put(
-                                ToolCallCompleted(
-                                    call_id=tool_call_id,
-                                    result=result_str,
-                                )
-                            )
-                            continue
-
-                        if not isinstance(message, AIMessageChunk):
-                            continue
-
-                        if hasattr(message, "usage_metadata") and message.usage_metadata:
-                            usage = message.usage_metadata
-                            total = usage.get("total_tokens")
-                            if total is not None and total > 0:
-                                self._turn_total_tokens = total
-                            else:
-                                self._turn_input_tokens += usage.get("input_tokens", 0)
-                                self._turn_output_tokens += usage.get("output_tokens", 0)
-
-                        if not hasattr(message, "content_blocks"):
-                            if (
-                                message.content
-                                and isinstance(message.content, str)
-                                and message.content.strip()
-                            ):
-                                if not active_message_started:
-                                    active_message_started = True
-                                await self._queue.put(
-                                    AgentTextChunk(chunk=message.content)
-                                )
-                            continue
-
-                        blocks = message.content_blocks
-
-                        for block in blocks:
-                            block_type = block.get("type")
-
-                            if block_type == "text":
-                                text = str(block.get("text", ""))
-                                if text:
-                                    if not active_message_started:
-                                        active_message_started = True
-                                    await self._queue.put(
-                                        AgentTextChunk(chunk=text)
-                                    )
-
-                            elif block_type in {"tool_call_chunk", "tool_call"}:
-                                chunk_name = block.get("name")
-                                chunk_args = block.get("args")
-                                chunk_id = block.get("id")
-                                chunk_index = block.get("index")
-
-                                buffer_key: str | int
-                                if chunk_index is not None:
-                                    buffer_key = chunk_index
-                                elif chunk_id is not None:
-                                    buffer_key = chunk_id
-                                else:
-                                    buffer_key = f"unknown-{len(tool_call_buffers)}"
-
-                                buffer = tool_call_buffers.setdefault(
-                                    buffer_key,
-                                    {
-                                        "name": None,
-                                        "id": None,
-                                        "args": None,
-                                        "args_parts": [],
-                                    },
-                                )
-
-                                if chunk_name:
-                                    buffer["name"] = chunk_name
-                                if chunk_id:
-                                    buffer["id"] = chunk_id
-
-                                if isinstance(chunk_args, dict):
-                                    buffer["args"] = chunk_args
-                                    buffer["args_parts"] = []
-                                elif isinstance(chunk_args, str):
-                                    if chunk_args:
-                                        parts: list[str] = buffer.setdefault(
-                                            "args_parts", []
-                                        )
-                                        if not parts or chunk_args != parts[-1]:
-                                            parts.append(chunk_args)
-                                        buffer["args"] = "".join(parts)
-                                elif chunk_args is not None:
-                                    buffer["args"] = chunk_args
-
-                                buffer_name = buffer.get("name")
-                                buffer_id = buffer.get("id")
-                                if buffer_name is None:
-                                    continue
-
-                                parsed_args = buffer.get("args")
-                                if isinstance(parsed_args, str):
-                                    if not parsed_args:
-                                        continue
-                                    try:
-                                        parsed_args = json.loads(parsed_args)
-                                    except json.JSONDecodeError:
-                                        continue
-                                elif parsed_args is None:
-                                    continue
-
-                                if not isinstance(parsed_args, dict):
-                                    parsed_args = {"value": parsed_args}
-
-                                if (
-                                    buffer_id is not None
-                                    and buffer_id not in displayed_tool_ids
-                                ):
-                                    displayed_tool_ids.add(buffer_id)
-                                    await self._queue.put(
-                                        ToolCallStarted(
-                                            call_id=buffer_id,
-                                            tool_name=buffer_name,
-                                            args=parsed_args,
-                                        )
-                                    )
-
-                                tool_call_buffers.pop(buffer_key, None)
-
-                        if getattr(message, "chunk_position", None) == "last":
-                            active_message_started = False
+                interrupt_occurred = await processor.run(stream_input, context)
 
                 if interrupt_occurred:
                     stream_input = await self._handle_interrupts()
@@ -308,10 +128,7 @@ class AgentRunner:
 
                 break
 
-            if self._turn_total_tokens is not None:
-                self.state.token_count += self._turn_total_tokens
-            elif self._turn_input_tokens or self._turn_output_tokens:
-                self.state.token_count += self._turn_input_tokens + self._turn_output_tokens
+            self._apply_token_counts(context)
 
         except asyncio.CancelledError:
             raise
@@ -319,51 +136,40 @@ class AgentRunner:
             logger.exception("Agent streaming error")
             await self._queue.put(AgentError(message=str(exc), retryable=True))
 
+    def _apply_token_counts(self, context: _TurnContext) -> None:
+        """Persist token usage from the turn context to session state."""
+        if context.total_tokens is not None:
+            self.state.token_count += context.total_tokens
+        elif context.input_tokens or context.output_tokens:
+            self.state.token_count += context.input_tokens + context.output_tokens
+
     async def _handle_interrupts(self) -> Any:
         """Handle HITL interrupts by requesting user approval.
 
         Returns a Command(resume=...) to continue the agent, or None
         if all interrupts were rejected (which ends the turn).
         """
-        from langchain.agents.middleware.human_in_the_loop import (
-            ApproveDecision,
-            RejectDecision,
-        )
         from langgraph.types import Command
-
-        decision_type = ApproveDecision | RejectDecision
 
         resume_payload: dict[str, Any] = {}
         all_rejected = True
 
         for interrupt_id, interrupt_data in self._pending_interrupts.items():
             value = interrupt_data["value"]
-            tool_name = value.get("tool_name", value.get("name", "unknown"))
-
             action_requests = value.get("action_requests", [])
+
             if not action_requests:
-                args = {
-                    k: v for k, v in value.items()
-                    if k not in ("tool_name", "name")
-                }
-                approved = await self._request_single_approval(tool_name, args)
-                if approved:
-                    resume_payload[interrupt_id] = [{"type": "approve"}]
-                    all_rejected = False
-                else:
-                    resume_payload[interrupt_id] = [{"type": "reject"}]
+                result = await _process_single_interrupt(
+                    value, self._request_single_approval
+                )
             else:
-                decisions: list[decision_type] = []
-                for ar in action_requests:
-                    ar_name = ar.get("name", "unknown")
-                    ar_args = ar.get("args", {})
-                    approved = await self._request_single_approval(ar_name, ar_args)
-                    if approved:
-                        decisions.append(ApproveDecision(type="approve"))
-                        all_rejected = False
-                    else:
-                        decisions.append(RejectDecision(type="reject"))
-                resume_payload[interrupt_id] = {"decisions": decisions}
+                result = await _process_action_requests(
+                    value, self._request_single_approval
+                )
+
+            resume_payload[interrupt_id] = result.payload
+            if result.was_approved:
+                all_rejected = False
 
         self._pending_interrupts.clear()
 
