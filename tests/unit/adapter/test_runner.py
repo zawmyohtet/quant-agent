@@ -167,6 +167,155 @@ class TestShutdown:
         await runner.shutdown()
         mock_checkpointer.close.assert_called_once()
 
+    @pytest.mark.asyncio
+    async def test_shutdown_close_checkpointer_error(
+        self, runner: AgentRunner
+    ) -> None:
+        mock_checkpointer = AsyncMock()
+        mock_checkpointer.close = AsyncMock(
+            side_effect=RuntimeError("close fail")
+        )
+        runner._checkpointer = mock_checkpointer
+
+        await runner.shutdown()
+        mock_checkpointer.close.assert_awaited_once()
+
+
+class TestApplyTokenCounts:
+    def test_apply_total_tokens(self, runner: AgentRunner) -> None:
+        from quantagent.adapter._stream_processing import _TurnContext
+
+        context = _TurnContext()
+        context.total_tokens = 42
+        runner._apply_token_counts(context)
+        assert runner.state.token_count == 42
+
+    def test_apply_input_output_tokens(self, runner: AgentRunner) -> None:
+        from quantagent.adapter._stream_processing import _TurnContext
+
+        context = _TurnContext()
+        context.input_tokens = 10
+        context.output_tokens = 20
+        runner._apply_token_counts(context)
+        assert runner.state.token_count == 30
+
+    def test_apply_no_tokens(self, runner: AgentRunner) -> None:
+        from quantagent.adapter._stream_processing import _TurnContext
+
+        context = _TurnContext()
+        runner._apply_token_counts(context)
+        assert runner.state.token_count == 0
+
+
+class TestHandleInterrupts:
+    @pytest.mark.asyncio
+    async def test_all_rejected_returns_none(self, runner: AgentRunner) -> None:
+        runner._pending_interrupts = {
+            "int-1": {"value": {"tool_name": "fetch", "symbol": "AAPL"}}
+        }
+        with patch.object(
+            runner, "_request_single_approval", return_value=False
+        ):
+            result = await runner._handle_interrupts()
+
+        assert result is None
+        assert runner._pending_interrupts == {}
+
+    @pytest.mark.asyncio
+    async def test_some_approved_returns_command(self, runner: AgentRunner) -> None:
+        runner._pending_interrupts = {
+            "int-1": {"value": {"tool_name": "fetch", "symbol": "AAPL"}}
+        }
+        with patch.object(
+            runner, "_request_single_approval", return_value=True
+        ), patch("langgraph.types.Command") as mock_cmd:
+            await runner._handle_interrupts()
+
+        mock_cmd.assert_called_once_with(resume={"int-1": [{"type": "approve"}]})
+        assert runner._pending_interrupts == {}
+
+
+class TestRequestSingleApproval:
+    @pytest.mark.asyncio
+    async def test_request_emits_approval_request(self, runner: AgentRunner) -> None:
+        async def _resolve_later() -> None:
+            await asyncio.sleep(0.01)
+            runner.resolve_approval(True)
+
+        asyncio.create_task(_resolve_later())
+        result = await asyncio.wait_for(
+            runner._request_single_approval("fetch", {"sym": "AAPL"}),
+            timeout=1.0,
+        )
+        assert result is True
+
+        event = runner.get_event_queue().get_nowait()
+        from quantagent.adapter.events import ApprovalRequest
+
+        assert isinstance(event, ApprovalRequest)
+        assert event.tool_name == "fetch"
+
+
+class TestReloadSkills:
+    @pytest.mark.asyncio
+    async def test_reload_skills_success(self, runner: AgentRunner) -> None:
+        mock_agent = MagicMock()
+        with patch(
+            "quantagent.adapter.runner.create_quant_agent",
+            return_value=mock_agent,
+        ):
+            await runner.reload_skills()
+
+        assert runner._agent is mock_agent
+        event = runner.get_event_queue().get_nowait()
+        from quantagent.adapter.events import SystemNotification
+
+        assert isinstance(event, SystemNotification)
+        assert "reloaded" in event.text
+
+    @pytest.mark.asyncio
+    async def test_reload_skills_failure(self, runner: AgentRunner) -> None:
+        with patch(
+            "quantagent.adapter.runner.create_quant_agent",
+            side_effect=RuntimeError("boom"),
+        ):
+            await runner.reload_skills()
+
+        event = runner.get_event_queue().get_nowait()
+        assert isinstance(event, AgentError)
+        assert "Failed to reload skills" in event.message
+
+
+class TestSetModel:
+    @pytest.mark.asyncio
+    async def test_set_model_success(self, runner: AgentRunner) -> None:
+        mock_agent = MagicMock()
+        with patch(
+            "quantagent.adapter.runner.create_quant_agent",
+            return_value=mock_agent,
+        ):
+            await runner.set_model("openai:gpt-4o-mini")
+
+        assert runner.state.config.model == "openai:gpt-4o-mini"
+        assert runner._agent is mock_agent
+        event = runner.get_event_queue().get_nowait()
+        from quantagent.adapter.events import SystemNotification
+
+        assert isinstance(event, SystemNotification)
+        assert "gpt-4o-mini" in event.text
+
+    @pytest.mark.asyncio
+    async def test_set_model_failure(self, runner: AgentRunner) -> None:
+        with patch(
+            "quantagent.adapter.runner.create_quant_agent",
+            side_effect=RuntimeError("boom"),
+        ):
+            await runner.set_model("bad-model")
+
+        event = runner.get_event_queue().get_nowait()
+        assert isinstance(event, AgentError)
+        assert "Failed to change model" in event.message
+
 
 class TestGetEventQueue:
     def test_returns_queue(self, runner: AgentRunner) -> None:
