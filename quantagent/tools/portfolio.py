@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 
 import numpy as np
 import pandas as pd
@@ -10,6 +11,13 @@ from scipy.optimize import minimize  # type: ignore[import-untyped]
 from quantagent.tools.providers.base import AbstractDataProvider
 
 logger = logging.getLogger(__name__)
+
+
+def _equal_weight_weights(
+    _mean_returns: pd.Series, _cov_matrix: pd.DataFrame, _constraints: dict | None
+) -> np.ndarray:
+    n = len(_mean_returns)
+    return np.ones(n) / n
 
 
 async def optimize_portfolio(
@@ -35,19 +43,12 @@ async def optimize_portfolio(
 
     mean_returns = returns.mean() * 252
     cov_matrix = returns.cov() * 252
-    n = len(symbols)
 
-    if method == "equal_weight":
-        weights = np.ones(n) / n
-    elif method == "min_vol":
-        weights = _min_volatility(mean_returns, cov_matrix, constraints)
-    elif method == "max_sharpe":
-        weights = _max_sharpe(mean_returns, cov_matrix, constraints)
-    elif method == "risk_parity":
-        weights = _risk_parity(cov_matrix)
-    else:
+    optimizer = _METHOD_DISPATCH.get(method)
+    if optimizer is None:
         raise ValueError(f"Unknown optimization method: {method}")
 
+    weights = optimizer(mean_returns, cov_matrix, constraints)
     weights = np.maximum(weights, 0)  # No short selling
     weights = weights / weights.sum()
 
@@ -219,3 +220,13 @@ def _risk_parity(cov_matrix: pd.DataFrame) -> np.ndarray:
     inv_diag = 1.0 / np.diag(cov_matrix.values)
     weights = inv_diag / inv_diag.sum()
     return weights  # type: ignore[no-any-return]
+
+
+_METHOD_DISPATCH: dict[
+    str, Callable[[pd.Series, pd.DataFrame, dict | None], np.ndarray]
+] = {
+    "equal_weight": _equal_weight_weights,
+    "min_vol": _min_volatility,
+    "max_sharpe": _max_sharpe,
+    "risk_parity": lambda _mr, cov, _c: _risk_parity(cov),
+}
