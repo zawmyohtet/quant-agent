@@ -2,11 +2,79 @@
 from __future__ import annotations
 
 import logging
+from typing import Callable
 
 import numpy as np
 import pandas as pd
 
 logger = logging.getLogger(__name__)
+
+
+def _compute_sma(result: pd.DataFrame, spec: str) -> None:
+    length = int(spec.split("_")[1])
+    result.ta.sma(length=length, append=True)
+
+
+def _compute_ema(result: pd.DataFrame, spec: str) -> None:
+    length = int(spec.split("_")[1])
+    result.ta.ema(length=length, append=True)
+
+
+def _compute_rsi(result: pd.DataFrame, spec: str) -> None:
+    length = int(spec.split("_")[1])
+    result.ta.rsi(length=length, append=True)
+
+
+def _compute_macd(result: pd.DataFrame, _spec: str) -> None:
+    result.ta.macd(append=True)
+
+
+def _compute_bbands(result: pd.DataFrame, _spec: str) -> None:
+    result.ta.bbands(append=True)
+
+
+def _compute_atr(result: pd.DataFrame, spec: str) -> None:
+    length = int(spec.split("_")[1])
+    result.ta.atr(length=length, append=True)
+
+
+def _compute_adx(result: pd.DataFrame, spec: str) -> None:
+    length = int(spec.split("_")[1])
+    result.ta.adx(length=length, append=True)
+
+
+def _compute_obv(result: pd.DataFrame, _spec: str) -> None:
+    result.ta.obv(append=True)
+
+
+def _compute_stoch(result: pd.DataFrame, _spec: str) -> None:
+    result.ta.stoch(append=True)
+
+
+def _compute_vwap(result: pd.DataFrame, _spec: str) -> None:
+    result.ta.vwap(append=True)
+
+
+def _compute_supertrend(result: pd.DataFrame, _spec: str) -> None:
+    result.ta.supertrend(append=True)
+
+
+_INDICATOR_DISPATCH: dict[str, Callable[[pd.DataFrame, str], None]] = {
+    "sma_": _compute_sma,
+    "ema_": _compute_ema,
+    "rsi_": _compute_rsi,
+    "macd": _compute_macd,
+    "macd_signal": _compute_macd,
+    "macd_hist": _compute_macd,
+    "bbands_": _compute_bbands,
+    "atr_": _compute_atr,
+    "adx_": _compute_adx,
+    "obv": _compute_obv,
+    "stoch_k": _compute_stoch,
+    "stoch_d": _compute_stoch,
+    "vwap": _compute_vwap,
+    "supertrend": _compute_supertrend,
+}
 
 
 def compute_indicators(df: pd.DataFrame, indicators: list[str]) -> pd.DataFrame:
@@ -24,39 +92,214 @@ def compute_indicators(df: pd.DataFrame, indicators: list[str]) -> pd.DataFrame:
     for spec in indicators:
         spec = spec.lower().strip()
         try:
-            if spec.startswith("sma_"):
-                length = int(spec.split("_")[1])
-                result.ta.sma(length=length, append=True)
-            elif spec.startswith("ema_"):
-                length = int(spec.split("_")[1])
-                result.ta.ema(length=length, append=True)
-            elif spec.startswith("rsi_"):
-                length = int(spec.split("_")[1])
-                result.ta.rsi(length=length, append=True)
-            elif spec == "macd" or spec == "macd_signal" or spec == "macd_hist":
-                result.ta.macd(append=True)
-            elif spec.startswith("bbands_"):
-                result.ta.bbands(append=True)
-                # pandas-ta adds BBL, BBM, BBU columns
-            elif spec.startswith("atr_"):
-                length = int(spec.split("_")[1])
-                result.ta.atr(length=length, append=True)
-            elif spec.startswith("adx_"):
-                length = int(spec.split("_")[1])
-                result.ta.adx(length=length, append=True)
-            elif spec == "obv":
-                result.ta.obv(append=True)
-            elif spec == "stoch_k" or spec == "stoch_d":
-                result.ta.stoch(append=True)
-            elif spec == "vwap":
-                result.ta.vwap(append=True)
-            elif spec == "supertrend":
-                result.ta.supertrend(append=True)
-            else:
-                logger.warning("Unknown indicator: %s", spec)
+            _dispatch_indicator(result, spec)
         except Exception as exc:
             logger.warning("Failed to compute indicator %s: %s", spec, exc)
     return result
+
+
+def _dispatch_indicator(result: pd.DataFrame, spec: str) -> None:
+    """Look up and execute the handler for a single indicator spec."""
+    for prefix, handler in _INDICATOR_DISPATCH.items():
+        if spec.startswith(prefix):
+            handler(result, spec)
+            return
+    logger.warning("Unknown indicator: %s", spec)
+
+
+# ---------------------------------------------------------------------------
+# Pattern detection
+# ---------------------------------------------------------------------------
+
+def _detect_doji(
+    df: pd.DataFrame,
+    body: pd.Series,
+    range_: pd.Series,
+) -> list[dict]:
+    mask = body < (range_ * 0.05)
+    return [
+        {"pattern": "doji", "date": d.isoformat(), "direction": "neutral", "strength": 1}
+        for d in df.index[mask]
+    ]
+
+
+def _detect_engulfing(
+    df: pd.DataFrame,
+    o: pd.Series,
+    c: pd.Series,
+) -> list[dict]:
+    bullish = (
+        (o.shift(1) > c.shift(1))
+        & (o < c)
+        & (o <= c.shift(1))
+        & (c >= o.shift(1))
+    )
+    bearish = (
+        (o.shift(1) < c.shift(1))
+        & (o > c)
+        & (o >= c.shift(1))
+        & (c <= o.shift(1))
+    )
+    patterns: list[dict] = []
+    for d in df.index[bullish]:
+        patterns.append(
+            {
+                "pattern": "engulfing",
+                "date": d.isoformat(),
+                "direction": "bullish",
+                "strength": 2,
+            }
+        )
+    for d in df.index[bearish]:
+        patterns.append(
+            {
+                "pattern": "engulfing",
+                "date": d.isoformat(),
+                "direction": "bearish",
+                "strength": 2,
+            }
+        )
+    return patterns
+
+
+def _detect_hammer(
+    df: pd.DataFrame,
+    o: pd.Series,
+    c: pd.Series,
+    upper_shadow: pd.Series,
+    lower_shadow: pd.Series,
+    body: pd.Series,
+) -> list[dict]:
+    mask = (lower_shadow > body * 2) & (upper_shadow < body * 0.5) & (c > o)
+    return [
+        {
+            "pattern": "hammer",
+            "date": d.isoformat(),
+            "direction": "bullish",
+            "strength": 2,
+        }
+        for d in df.index[mask]
+    ]
+
+
+def _detect_shooting_star(
+    df: pd.DataFrame,
+    o: pd.Series,
+    c: pd.Series,
+    upper_shadow: pd.Series,
+    lower_shadow: pd.Series,
+    body: pd.Series,
+) -> list[dict]:
+    mask = (upper_shadow > body * 2) & (lower_shadow < body * 0.5) & (c < o)
+    return [
+        {
+            "pattern": "shooting_star",
+            "date": d.isoformat(),
+            "direction": "bearish",
+            "strength": 2,
+        }
+        for d in df.index[mask]
+    ]
+
+
+def _detect_morning_star(
+    df: pd.DataFrame,
+    o: pd.Series,
+    c: pd.Series,
+    body: pd.Series,
+) -> list[dict]:
+    mask = (
+        (c.shift(2) < o.shift(2))
+        & (body.shift(1) < body.shift(2) * 0.3)
+        & (c > o)
+        & (c > (o.shift(2) + c.shift(2)) / 2)
+    )
+    return [
+        {
+            "pattern": "morning_star",
+            "date": d.isoformat(),
+            "direction": "bullish",
+            "strength": 3,
+        }
+        for d in df.index[mask]
+    ]
+
+
+def _detect_evening_star(
+    df: pd.DataFrame,
+    o: pd.Series,
+    c: pd.Series,
+    body: pd.Series,
+) -> list[dict]:
+    mask = (
+        (c.shift(2) > o.shift(2))
+        & (body.shift(1) < body.shift(2) * 0.3)
+        & (c < o)
+        & (c < (o.shift(2) + c.shift(2)) / 2)
+    )
+    return [
+        {
+            "pattern": "evening_star",
+            "date": d.isoformat(),
+            "direction": "bearish",
+            "strength": 3,
+        }
+        for d in df.index[mask]
+    ]
+
+
+def _detect_three_white_soldiers(
+    df: pd.DataFrame,
+    o: pd.Series,
+    c: pd.Series,
+    body: pd.Series,
+) -> list[dict]:
+    mask = (
+        (c > o)
+        & (c.shift(1) > o.shift(1))
+        & (c.shift(2) > o.shift(2))
+        & (c > c.shift(1))
+        & (c.shift(1) > c.shift(2))
+        & (o > o.shift(1))
+        & (o.shift(1) > o.shift(2))
+        & (body > body.shift(1) * 0.5)
+    )
+    return [
+        {
+            "pattern": "three_white_soldiers",
+            "date": d.isoformat(),
+            "direction": "bullish",
+            "strength": 3,
+        }
+        for d in df.index[mask]
+    ]
+
+
+def _detect_three_black_crows(
+    df: pd.DataFrame,
+    o: pd.Series,
+    c: pd.Series,
+    body: pd.Series,
+) -> list[dict]:
+    mask = (
+        (c < o)
+        & (c.shift(1) < o.shift(1))
+        & (c.shift(2) < o.shift(2))
+        & (c < c.shift(1))
+        & (c.shift(1) < c.shift(2))
+        & (o < o.shift(1))
+        & (o.shift(1) < o.shift(2))
+        & (body > body.shift(1) * 0.5)
+    )
+    return [
+        {
+            "pattern": "three_black_crows",
+            "date": d.isoformat(),
+            "direction": "bearish",
+            "strength": 3,
+        }
+        for d in df.index[mask]
+    ]
 
 
 def detect_patterns(df: pd.DataFrame) -> list[dict]:
@@ -78,138 +321,22 @@ def detect_patterns(df: pd.DataFrame) -> list[dict]:
     upper_shadow = h - np.maximum(o, c)
     lower_shadow = np.minimum(o, c) - lo
 
-    # Doji: body < 5% of range
-    doji = body < (range_ * 0.05)
-    for date in df.index[doji]:
-        patterns.append(
-            {"pattern": "doji", "date": date.isoformat(), "direction": "neutral", "strength": 1}
-        )
+    patterns.extend(_detect_doji(df, body, range_))
+    patterns.extend(_detect_engulfing(df, o, c))
+    patterns.extend(_detect_hammer(df, o, c, upper_shadow, lower_shadow, body))
+    patterns.extend(_detect_shooting_star(df, o, c, upper_shadow, lower_shadow, body))
+    patterns.extend(_detect_morning_star(df, o, c, body))
+    patterns.extend(_detect_evening_star(df, o, c, body))
+    patterns.extend(_detect_three_white_soldiers(df, o, c, body))
+    patterns.extend(_detect_three_black_crows(df, o, c, body))
 
-    # Engulfing
-    bullish_engulfing = (o.shift(1) > c.shift(1)) & (o < c) & (o <= c.shift(1)) & (c >= o.shift(1))
-    bearish_engulfing = (o.shift(1) < c.shift(1)) & (o > c) & (o >= c.shift(1)) & (c <= o.shift(1))
-    for date in df.index[bullish_engulfing]:
-        patterns.append(
-            {
-                "pattern": "engulfing",
-                "date": date.isoformat(),
-                "direction": "bullish",
-                "strength": 2,
-            }
-        )
-    for date in df.index[bearish_engulfing]:
-        patterns.append(
-            {
-                "pattern": "engulfing",
-                "date": date.isoformat(),
-                "direction": "bearish",
-                "strength": 2,
-            }
-        )
-
-    # Hammer
-    hammer = (lower_shadow > body * 2) & (upper_shadow < body * 0.5) & (c > o)
-    for date in df.index[hammer]:
-        patterns.append(
-            {"pattern": "hammer", "date": date.isoformat(), "direction": "bullish", "strength": 2}
-        )
-
-    # Shooting star
-    shooting_star = (upper_shadow > body * 2) & (lower_shadow < body * 0.5) & (c < o)
-    for date in df.index[shooting_star]:
-        patterns.append(
-            {
-                "pattern": "shooting_star",
-                "date": date.isoformat(),
-                "direction": "bearish",
-                "strength": 2,
-            }
-        )
-
-    # Morning star (3-candle bullish reversal)
-    if len(df) >= 3:
-        morning_star = (
-            (c.shift(2) < o.shift(2))  # Day 1: bearish
-            & (body.shift(1) < body.shift(2) * 0.3)  # Day 2: small body
-            & (c > o)  # Day 3: bullish
-            & (c > (o.shift(2) + c.shift(2)) / 2)  # Day 3 closes above midpoint of day 1
-        )
-        for date in df.index[morning_star]:
-            patterns.append(
-                {
-                    "pattern": "morning_star",
-                    "date": date.isoformat(),
-                    "direction": "bullish",
-                    "strength": 3,
-                }
-            )
-
-    # Evening star (3-candle bearish reversal)
-    if len(df) >= 3:
-        evening_star = (
-            (c.shift(2) > o.shift(2))  # Day 1: bullish
-            & (body.shift(1) < body.shift(2) * 0.3)  # Day 2: small body
-            & (c < o)  # Day 3: bearish
-            & (c < (o.shift(2) + c.shift(2)) / 2)  # Day 3 closes below midpoint of day 1
-        )
-        for date in df.index[evening_star]:
-            patterns.append(
-                {
-                    "pattern": "evening_star",
-                    "date": date.isoformat(),
-                    "direction": "bearish",
-                    "strength": 3,
-                }
-            )
-
-    # Three white soldiers
-    if len(df) >= 3:
-        tws = (
-            (c > o)
-            & (c.shift(1) > o.shift(1))
-            & (c.shift(2) > o.shift(2))
-            & (c > c.shift(1))
-            & (c.shift(1) > c.shift(2))
-            & (o > o.shift(1))
-            & (o.shift(1) > o.shift(2))
-            & (body > body.shift(1) * 0.5)
-        )
-        for date in df.index[tws]:
-            patterns.append(
-                {
-                    "pattern": "three_white_soldiers",
-                    "date": date.isoformat(),
-                    "direction": "bullish",
-                    "strength": 3,
-                }
-            )
-
-    # Three black crows
-    if len(df) >= 3:
-        tbc = (
-            (c < o)
-            & (c.shift(1) < o.shift(1))
-            & (c.shift(2) < o.shift(2))
-            & (c < c.shift(1))
-            & (c.shift(1) < c.shift(2))
-            & (o < o.shift(1))
-            & (o.shift(1) < o.shift(2))
-            & (body > body.shift(1) * 0.5)
-        )
-        for date in df.index[tbc]:
-            patterns.append(
-                {
-                    "pattern": "three_black_crows",
-                    "date": date.isoformat(),
-                    "direction": "bearish",
-                    "strength": 3,
-                }
-            )
-
-    # Sort by date, most recent first
     patterns.sort(key=lambda x: x["date"], reverse=True)
     return patterns
 
+
+# ---------------------------------------------------------------------------
+# Support / Resistance
+# ---------------------------------------------------------------------------
 
 def detect_support_resistance(df: pd.DataFrame, window: int = 20) -> dict:
     """Detect support and resistance levels using local minima/maxima.
@@ -223,7 +350,6 @@ def detect_support_resistance(df: pd.DataFrame, window: int = 20) -> dict:
     lows = df["Low"]
     highs = df["High"]
 
-    # Local minima and maxima
     local_min = (lows == lows.rolling(window=window, center=True).min()) & (
         lows.shift(1) > lows
     ) & (lows.shift(-1) > lows)
@@ -234,7 +360,6 @@ def detect_support_resistance(df: pd.DataFrame, window: int = 20) -> dict:
     support_levels = sorted(lows[local_min].dropna().tolist())
     resistance_levels = sorted(highs[local_max].dropna().tolist())
 
-    # Deduplicate nearby levels (within 1%)
     support_levels = _deduplicate_levels(support_levels)
     resistance_levels = _deduplicate_levels(resistance_levels)
 
@@ -256,6 +381,61 @@ def _deduplicate_levels(levels: list[float], tolerance: float = 0.01) -> list[fl
     return result
 
 
+# ---------------------------------------------------------------------------
+# Signal generation
+# ---------------------------------------------------------------------------
+
+def _signal_sma_crossover(result: pd.DataFrame) -> pd.DataFrame:
+    fast = result.ta.sma(length=50, append=False)
+    slow = result.ta.sma(length=200, append=False)
+    result["Signal"] = np.where(fast > slow, 1, np.where(fast < slow, -1, 0))
+    return result
+
+
+def _signal_ema_crossover(result: pd.DataFrame) -> pd.DataFrame:
+    fast = result.ta.ema(length=12, append=False)
+    slow = result.ta.ema(length=26, append=False)
+    result["Signal"] = np.where(fast > slow, 1, np.where(fast < slow, -1, 0))
+    return result
+
+
+def _signal_rsi_mean_reversion(result: pd.DataFrame) -> pd.DataFrame:
+    rsi = result.ta.rsi(length=14, append=False)
+    result["Signal"] = np.where(rsi < 30, 1, np.where(rsi > 70, -1, 0))
+    return result
+
+
+def _signal_macd_momentum(result: pd.DataFrame) -> pd.DataFrame:
+    macd_df = result.ta.macd(append=False)
+    if macd_df is not None and not macd_df.empty:
+        macd_line = macd_df.iloc[:, 0]
+        signal_line = macd_df.iloc[:, 1]
+        result["Signal"] = np.where(
+            macd_line > signal_line, 1, np.where(macd_line < signal_line, -1, 0)
+        )
+    return result
+
+
+def _signal_bollinger_breakout(result: pd.DataFrame) -> pd.DataFrame:
+    bb = result.ta.bbands(length=20, append=False)
+    if bb is not None and not bb.empty:
+        upper = bb.iloc[:, 2]
+        lower = bb.iloc[:, 0]
+        result["Signal"] = np.where(
+            result["Close"] > upper, 1, np.where(result["Close"] < lower, -1, 0)
+        )
+    return result
+
+
+_STRATEGY_DISPATCH: dict[str, Callable[[pd.DataFrame], pd.DataFrame]] = {
+    "sma_crossover": _signal_sma_crossover,
+    "ema_crossover": _signal_ema_crossover,
+    "rsi_mean_reversion": _signal_rsi_mean_reversion,
+    "macd_momentum": _signal_macd_momentum,
+    "bollinger_breakout": _signal_bollinger_breakout,
+}
+
+
 def generate_signals(df: pd.DataFrame, strategy: str) -> pd.DataFrame:
     """Generate trading signals from a strategy.
 
@@ -268,44 +448,85 @@ def generate_signals(df: pd.DataFrame, strategy: str) -> pd.DataFrame:
     result = df.copy()
     result["Signal"] = 0
 
-    if strategy == "sma_crossover":
-        fast = result.ta.sma(length=50, append=False)
-        slow = result.ta.sma(length=200, append=False)
-        result["Signal"] = np.where(fast > slow, 1, np.where(fast < slow, -1, 0))
-    elif strategy == "ema_crossover":
-        fast = result.ta.ema(length=12, append=False)
-        slow = result.ta.ema(length=26, append=False)
-        result["Signal"] = np.where(fast > slow, 1, np.where(fast < slow, -1, 0))
-    elif strategy == "rsi_mean_reversion":
-        rsi = result.ta.rsi(length=14, append=False)
-        result["Signal"] = np.where(rsi < 30, 1, np.where(rsi > 70, -1, 0))
-    elif strategy == "macd_momentum":
-        macd_df = result.ta.macd(append=False)
-        if macd_df is not None and not macd_df.empty:
-            macd_line = macd_df.iloc[:, 0]
-            signal_line = macd_df.iloc[:, 1]
-            result["Signal"] = np.where(
-                macd_line > signal_line, 1, np.where(macd_line < signal_line, -1, 0)
-            )
-    elif strategy == "bollinger_breakout":
-        bb = result.ta.bbands(length=20, append=False)
-        if bb is not None and not bb.empty:
-            upper = bb.iloc[:, 2]
-            lower = bb.iloc[:, 0]
-            result["Signal"] = np.where(
-                result["Close"] > upper, 1, np.where(result["Close"] < lower, -1, 0)
-            )
-    else:
+    handler = _STRATEGY_DISPATCH.get(strategy)
+    if handler is None:
         logger.warning("Unknown strategy: %s", strategy)
+        return result
 
-    return result
+    return handler(result)
 
+
+# ---------------------------------------------------------------------------
+# Correlation matrix
+# ---------------------------------------------------------------------------
 
 def compute_correlation_matrix(dfs: dict[str, pd.DataFrame]) -> pd.DataFrame:
     """Compute correlation matrix of closing prices across symbols."""
     closes = {sym: df["Close"] for sym, df in dfs.items()}
     combined = pd.DataFrame(closes)
     return combined.corr().round(4)
+
+
+# ---------------------------------------------------------------------------
+# Technical summary
+# ---------------------------------------------------------------------------
+
+def _summarize_trend(
+    close: pd.Series,
+    sma20: pd.Series | None,
+    sma50: pd.Series | None,
+    sma200: pd.Series | None,
+) -> dict:
+    return {
+        "sma20": round(sma20.iloc[-1], 4) if sma20 is not None else None,
+        "sma50": round(sma50.iloc[-1], 4) if sma50 is not None else None,
+        "sma200": round(sma200.iloc[-1], 4) if sma200 is not None else None,
+        "above_sma200": (
+            close.iloc[-1] > sma200.iloc[-1] if sma200 is not None else None
+        ),
+    }
+
+
+def _summarize_momentum(
+    rsi: pd.Series | None, macd_df: pd.DataFrame | None
+) -> dict:
+    macd_signal = None
+    if macd_df is not None:
+        macd_signal = (
+            "bullish"
+            if macd_df.iloc[-1, 0] > macd_df.iloc[-1, 1]
+            else "bearish"
+        )
+    return {
+        "rsi_14": round(rsi.iloc[-1], 2) if rsi is not None else None,
+        "macd_signal": macd_signal,
+    }
+
+
+def _summarize_volatility(
+    close: pd.Series,
+    bb: pd.DataFrame | None,
+    atr: pd.Series | None,
+    adx_value: float | None,
+) -> dict:
+    bb_position = None
+    if bb is not None and bb.iloc[-1, 2] != bb.iloc[-1, 0]:
+        bb_position = round(
+            (close.iloc[-1] - bb.iloc[-1, 0]) / (bb.iloc[-1, 2] - bb.iloc[-1, 0]),
+            4,
+        )
+    return {
+        "bb_position": bb_position,
+        "atr_14": round(atr.iloc[-1], 4) if atr is not None else None,
+        "adx_14": round(adx_value, 2) if adx_value is not None else None,
+    }
+
+
+def _summarize_volume(df: pd.DataFrame) -> dict:
+    return {
+        "avg_volume_20": round(df["Volume"].tail(20).mean(), 0),
+        "latest_volume": int(df["Volume"].iloc[-1]),
+    }
 
 
 def summarize_technicals(df: pd.DataFrame) -> dict:
@@ -328,35 +549,14 @@ def summarize_technicals(df: pd.DataFrame) -> dict:
     adx = df.ta.adx(length=14, append=False)
 
     adx_val = adx.iloc[-1] if adx is not None and not adx.empty else None
-    adx_value = adx_val.iloc[-1] if hasattr(adx_val, "iloc") else adx_val  # type: ignore[union-attr]
+    adx_value = (
+        adx_val.iloc[-1] if hasattr(adx_val, "iloc") else adx_val  # type: ignore[union-attr]
+    )
 
     return {
         "price": round(close.iloc[-1], 4),
-        "trend": {
-            "sma20": round(sma20.iloc[-1], 4) if sma20 is not None else None,
-            "sma50": round(sma50.iloc[-1], 4) if sma50 is not None else None,
-            "sma200": round(sma200.iloc[-1], 4) if sma200 is not None else None,
-            "above_sma200": close.iloc[-1] > sma200.iloc[-1] if sma200 is not None else None,
-        },
-        "momentum": {
-            "rsi_14": round(rsi.iloc[-1], 2) if rsi is not None else None,
-            "macd_signal": "bullish"
-            if macd_df is not None and macd_df.iloc[-1, 0] > macd_df.iloc[-1, 1]
-            else "bearish"
-            if macd_df is not None
-            else None,
-        },
-        "volatility": {
-            "bb_position": round(
-                (close.iloc[-1] - bb.iloc[-1, 0]) / (bb.iloc[-1, 2] - bb.iloc[-1, 0]), 4
-            )
-            if bb is not None and bb.iloc[-1, 2] != bb.iloc[-1, 0]
-            else None,
-            "atr_14": round(atr.iloc[-1], 4) if atr is not None else None,
-            "adx_14": round(adx_value, 2) if adx_value is not None else None,
-        },
-        "volume": {
-            "avg_volume_20": round(df["Volume"].tail(20).mean(), 0),
-            "latest_volume": int(df["Volume"].iloc[-1]),
-        },
+        "trend": _summarize_trend(close, sma20, sma50, sma200),
+        "momentum": _summarize_momentum(rsi, macd_df),
+        "volatility": _summarize_volatility(close, bb, atr, adx_value),
+        "volume": _summarize_volume(df),
     }
