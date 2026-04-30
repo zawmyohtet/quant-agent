@@ -149,6 +149,7 @@ class QuantAgentApp(App):
 
         elif isinstance(event, AgentTurnComplete):
             self.state.is_running = False
+            messages._agent_buffer_id = None
             status = self.query_one("#status-bar", StatusBar)
             if hasattr(status, "refresh_state"):
                 status.refresh_state()
@@ -193,6 +194,7 @@ class QuantAgentApp(App):
         if self.state.is_running:
             return
         messages = self.query_one("#messages", MessageView)
+        messages._agent_buffer_id = None
         messages.add_user_message(text)
         self.state.is_running = True
         status = self.query_one("#status-bar", StatusBar)
