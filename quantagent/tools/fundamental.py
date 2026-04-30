@@ -64,23 +64,10 @@ def compute_dcf(
     }
 
 
-def score_piotroski_f(fundamentals: dict) -> dict:
-    """Compute Piotroski F-Score (0-9) from fundamental data.
-
-    Args:
-        fundamentals: Dict with roa, operating_cash_flow, net_income,
-            total_assets_current, total_assets_prior, total_liabilities_current,
-            total_liabilities_prior, gross_margin_current, gross_margin_prior,
-            asset_turnover_current, asset_turnover_prior, shares_outstanding_current,
-            shares_outstanding_prior.
-
-    Returns:
-        Dict with score (0-9) and per-criterion breakdown.
-    """
+def _evaluate_profitability(fundamentals: dict) -> tuple[int, dict]:
+    """Evaluate profitability criteria. Returns (score, breakdown)."""
     score = 0
-    breakdown = {}
-
-    # Profitability
+    breakdown: dict[str, bool] = {}
     roa = fundamentals.get("roa", 0)
     ocf = fundamentals.get("operating_cash_flow", 0)
     net_income = fundamentals.get("net_income", 0)
@@ -103,7 +90,14 @@ def score_piotroski_f(fundamentals: dict) -> dict:
     if breakdown["ocf_gt_net_income"]:
         score += 1
 
-    # Leverage / Liquidity
+    return score, breakdown
+
+
+def _evaluate_leverage(fundamentals: dict) -> tuple[int, dict]:
+    """Evaluate leverage and liquidity criteria. Returns (score, breakdown)."""
+    score = 0
+    breakdown: dict[str, bool] = {}
+
     leverage_current = fundamentals.get("total_liabilities_current", 0) / max(
         fundamentals.get("total_assets_current", 1), 1
     )
@@ -114,22 +108,29 @@ def score_piotroski_f(fundamentals: dict) -> dict:
     if breakdown["leverage_improving"]:
         score += 1
 
-    breakdown["liquidity_improving"] = fundamentals.get("current_ratio_current", 0) > fundamentals.get(
-        "current_ratio_prior", 0
-    )
+    breakdown["liquidity_improving"] = fundamentals.get(
+        "current_ratio_current", 0
+    ) > fundamentals.get("current_ratio_prior", 0)
     if breakdown["liquidity_improving"]:
         score += 1
 
-    breakdown["no_new_shares"] = fundamentals.get("shares_outstanding_current", 0) <= fundamentals.get(
-        "shares_outstanding_prior", 0
-    )
+    breakdown["no_new_shares"] = fundamentals.get(
+        "shares_outstanding_current", 0
+    ) <= fundamentals.get("shares_outstanding_prior", 0)
     if breakdown["no_new_shares"]:
         score += 1
 
-    # Efficiency
-    breakdown["margin_improving"] = fundamentals.get("gross_margin_current", 0) > fundamentals.get(
-        "gross_margin_prior", 0
-    )
+    return score, breakdown
+
+
+def _evaluate_efficiency(fundamentals: dict) -> tuple[int, dict]:
+    """Evaluate efficiency criteria. Returns (score, breakdown)."""
+    score = 0
+    breakdown: dict[str, bool] = {}
+
+    breakdown["margin_improving"] = fundamentals.get(
+        "gross_margin_current", 0
+    ) > fundamentals.get("gross_margin_prior", 0)
     if breakdown["margin_improving"]:
         score += 1
 
@@ -139,10 +140,30 @@ def score_piotroski_f(fundamentals: dict) -> dict:
     if breakdown["turnover_improving"]:
         score += 1
 
+    return score, breakdown
+
+
+def score_piotroski_f(fundamentals: dict) -> dict:
+    """Compute Piotroski F-Score (0-9) from fundamental data.
+
+    Args:
+        fundamentals: Dict with roa, operating_cash_flow, net_income,
+            total_assets_current, total_assets_prior, total_liabilities_current,
+            total_liabilities_prior, gross_margin_current, gross_margin_prior,
+            asset_turnover_current, asset_turnover_prior, shares_outstanding_current,
+            shares_outstanding_prior.
+
+    Returns:
+        Dict with score (0-9) and per-criterion breakdown.
+    """
+    p_score, p_breakdown = _evaluate_profitability(fundamentals)
+    l_score, l_breakdown = _evaluate_leverage(fundamentals)
+    e_score, e_breakdown = _evaluate_efficiency(fundamentals)
+
     return {
-        "score": score,
+        "score": p_score + l_score + e_score,
         "max_score": 9,
-        "breakdown": breakdown,
+        "breakdown": {**p_breakdown, **l_breakdown, **e_breakdown},
     }
 
 
