@@ -173,6 +173,10 @@ Domain knowledge in `prompts.py` is a bug.
 - **No `print()` in library code.** Use `logging.getLogger(__name__)` instead.
   The TUI uses `SystemNotification` events for user-facing messages.
 - Line length: **100 characters** (configured in `pyproject.toml` via ruff).
+- **Cognitive complexity must be < 5.** If a function exceeds this, extract
+  helpers using dispatch tables, strategy pattern, or single-responsibility
+  methods. Never keep long `if/elif` chains, deeply nested loops, or
+  multi-level boolean logic in a single function.
 
 ### Async
 - All I/O-bound functions (data provider calls, file reads, DB operations) must be `async`.
