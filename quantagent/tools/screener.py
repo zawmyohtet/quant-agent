@@ -2,7 +2,10 @@
 from __future__ import annotations
 
 import logging
+import operator as op_module
+from collections.abc import Callable
 from io import StringIO
+from typing import Any
 
 import pandas as pd
 import requests
@@ -104,46 +107,42 @@ async def screen_stocks(
         return pd.DataFrame()
 
     df = pd.DataFrame(rows)
-
-    # Apply criteria filters
-    for key, value in criteria.items():
-        try:
-            if key == "pe_lt":
-                df = df[df["pe_ratio"] < value]
-            elif key == "pe_gt":
-                df = df[df["pe_ratio"] > value]
-            elif key == "pb_lt":
-                df = df[df["pb_ratio"] < value]
-            elif key == "roe_gt":
-                df = df[df["roe"] > value]
-            elif key == "roa_gt":
-                df = df[df["roa"] > value]
-            elif key == "debt_equity_lt":
-                df = df[df["debt_equity"] < value]
-            elif key == "mcap_gt":
-                df = df[df["market_cap"] > value]
-            elif key == "mcap_lt":
-                df = df[df["market_cap"] < value]
-            elif key == "volume_gt":
-                df = df[df["volume"] > value]
-            elif key == "dividend_yield_gt":
-                df = df[df["dividend_yield"] > value]
-            elif key == "revenue_growth_gt":
-                df = df[df["revenue_growth"] > value]
-            elif key == "eps_growth_gt":
-                df = df[df["eps_growth"] > value]
-            elif key == "rsi_lt":
-                df = df[df["rsi"] < value]
-            elif key == "rsi_gt":
-                df = df[df["rsi"] > value]
-            elif key == "beta_lt":
-                df = df[df["beta"] < value]
-            else:
-                logger.warning("Unknown criteria key: %s", key)
-        except Exception as exc:
-            logger.warning("Failed to apply criteria %s: %s", key, exc)
+    df = _apply_criteria(df, criteria)
 
     if sort_by in df.columns:
         df = df.sort_values(by=sort_by, ascending=ascending, na_position="last")
 
     return df.head(limit).reset_index(drop=True)
+
+
+_CRITERIA_DISPATCH: dict[str, tuple[str, Callable[[Any, Any], bool]]] = {
+    "pe_lt": ("pe_ratio", op_module.lt),
+    "pe_gt": ("pe_ratio", op_module.gt),
+    "pb_lt": ("pb_ratio", op_module.lt),
+    "roe_gt": ("roe", op_module.gt),
+    "roa_gt": ("roa", op_module.gt),
+    "debt_equity_lt": ("debt_equity", op_module.lt),
+    "mcap_gt": ("market_cap", op_module.gt),
+    "mcap_lt": ("market_cap", op_module.lt),
+    "volume_gt": ("volume", op_module.gt),
+    "dividend_yield_gt": ("dividend_yield", op_module.gt),
+    "revenue_growth_gt": ("revenue_growth", op_module.gt),
+    "eps_growth_gt": ("eps_growth", op_module.gt),
+    "rsi_lt": ("rsi", op_module.lt),
+    "rsi_gt": ("rsi", op_module.gt),
+    "beta_lt": ("beta", op_module.lt),
+}
+
+
+def _apply_criteria(df: pd.DataFrame, criteria: dict[str, Any]) -> pd.DataFrame:
+    """Apply screening criteria filters to a DataFrame."""
+    for key, value in criteria.items():
+        try:
+            column, oper = _CRITERIA_DISPATCH.get(key, (None, None))
+            if column is None:
+                logger.warning("Unknown criteria key: %s", key)
+                continue
+            df = df[oper(df[column], value)]
+        except Exception as exc:
+            logger.warning("Failed to apply criteria %s: %s", key, exc)
+    return df
