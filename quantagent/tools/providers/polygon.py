@@ -186,7 +186,7 @@ def _parse_news_timestamp(item: Any) -> datetime | None:
         return None
     if isinstance(pub_dt, str):
         return datetime.fromisoformat(pub_dt.replace("Z", "+00:00"))
-    return pub_dt
+    return pub_dt  # type: ignore[no-any-return]
 
 
 def _build_news_entry(item: Any, pub_dt: datetime | None) -> dict:
