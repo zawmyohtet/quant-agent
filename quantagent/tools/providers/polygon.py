@@ -120,21 +120,9 @@ class PolygonProvider(AbstractDataProvider):
         )
         results = []
         for item in news_items:
-            pub_dt = item.published_utc if hasattr(item, "published_utc") else None
-            if pub_dt:
-                if isinstance(pub_dt, str):
-                    pub_dt = datetime.fromisoformat(pub_dt.replace("Z", "+00:00"))
-                if pub_dt < cutoff:
-                    continue
-            results.append(
-                {
-                    "title": item.title if hasattr(item, "title") else "",
-                    "source": item.publisher.name if hasattr(item, "publisher") else "",
-                    "url": item.article_url if hasattr(item, "article_url") else "",
-                    "published_at": pub_dt.isoformat() if pub_dt else "",
-                    "sentiment": "neutral",
-                }
-            )
+            pub_dt = _parse_news_timestamp(item)
+            if pub_dt is not None and pub_dt >= cutoff:
+                results.append(_build_news_entry(item, pub_dt))
         return results
 
 
@@ -189,3 +177,25 @@ def _interval_multiplier(interval: str) -> int:
         "1mo": 1,
     }
     return mapping.get(interval, 1)
+
+
+def _parse_news_timestamp(item: Any) -> datetime | None:
+    """Extract and parse the published_utc timestamp from a news item."""
+    pub_dt = getattr(item, "published_utc", None)
+    if pub_dt is None:
+        return None
+    if isinstance(pub_dt, str):
+        return datetime.fromisoformat(pub_dt.replace("Z", "+00:00"))
+    return pub_dt
+
+
+def _build_news_entry(item: Any, pub_dt: datetime | None) -> dict:
+    """Build a news entry dict from a Polygon news item."""
+    publisher = getattr(item, "publisher", None)
+    return {
+        "title": getattr(item, "title", ""),
+        "source": publisher.name if publisher is not None else "",
+        "url": getattr(item, "article_url", ""),
+        "published_at": pub_dt.isoformat() if pub_dt is not None else "",
+        "sentiment": "neutral",
+    }
