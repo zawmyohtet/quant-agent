@@ -165,6 +165,31 @@ async def run_walkforward(
     return results
 
 
+def _evaluate_combo(
+    df: pd.DataFrame, config: BacktestConfig, metric: str, params: dict
+) -> tuple[dict, float] | None:
+    """Run a backtest for a single parameter combo and return (result, metric_value) or None."""
+    try:
+        signals_df = generate_signals(df, config.strategy)
+        entries = signals_df["Signal"] == 1
+        exits = signals_df["Signal"] == -1
+
+        pf = vbt.Portfolio.from_signals(
+            signals_df["Close"],
+            entries,
+            exits,
+            freq="1d",
+            init_cash=config.initial_capital,
+            fees=config.commission,
+        )
+
+        metric_value = float(getattr(pf, metric)())
+        return {"params": params, metric: round(metric_value, 4)}, metric_value
+    except Exception as exc:
+        logger.warning("Optimization failed for params %s: %s", params, exc)
+        return None
+
+
 async def optimize_parameters(
     provider: AbstractDataProvider,
     config: BacktestConfig,
@@ -193,32 +218,14 @@ async def optimize_parameters(
 
     for combo in product(*values):
         params = dict(zip(keys, combo, strict=False))
-        try:
-            # For built-in strategies, params are not directly passed to generate_signals
-            # In a full implementation, generate_signals would accept params.
-            # Here we run with default params and note the limitation.
-            signals_df = generate_signals(df, config.strategy)
-            entries = signals_df["Signal"] == 1
-            exits = signals_df["Signal"] == -1
-
-            pf = vbt.Portfolio.from_signals(
-                signals_df["Close"],
-                entries,
-                exits,
-                freq="1d",
-                init_cash=config.initial_capital,
-                fees=config.commission,
-            )
-
-            metric_value = float(getattr(pf, metric)())
-            all_results.append({"params": params, metric: round(metric_value, 4)})
-
-            if metric_value > best_value:
-                best_value = metric_value
-                best_params = params
-        except Exception as exc:
-            logger.warning("Optimization failed for params %s: %s", params, exc)
+        result = _evaluate_combo(df, config, metric, params)
+        if result is None:
             continue
+        result_entry, metric_value = result
+        all_results.append(result_entry)
+        if metric_value > best_value:
+            best_value = metric_value
+            best_params = params
 
     return {
         "best_params": best_params,
