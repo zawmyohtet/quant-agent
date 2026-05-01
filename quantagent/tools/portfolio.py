@@ -65,6 +65,25 @@ async def optimize_portfolio(
     }
 
 
+def _compute_beta(port_returns: pd.Series, bench_returns: pd.Series) -> float:
+    cov = np.cov(port_returns.dropna(), bench_returns.dropna())
+    return cov[0, 1] / cov[1, 1] if cov[1, 1] != 0 else 0.0
+
+
+def _compute_var_cvar(port_returns: pd.Series) -> tuple[float, float, float]:
+    var_95 = float(np.percentile(port_returns, 5))
+    var_99 = float(np.percentile(port_returns, 1))
+    cvar_95 = float(port_returns[port_returns <= var_95].mean()) if (port_returns <= var_95).any() else 0.0
+    return var_95, var_99, cvar_95
+
+
+def _compute_tracking_info(port_returns: pd.Series, bench_returns: pd.Series) -> tuple[float, float]:
+    active_returns = port_returns - bench_returns
+    tracking_error = float(active_returns.std() * np.sqrt(252))
+    info_ratio = float(active_returns.mean() * 252 / tracking_error) if tracking_error > 0 else 0.0
+    return tracking_error, info_ratio
+
+
 async def compute_portfolio_metrics(
     provider: AbstractDataProvider,
     weights: dict[str, float],
@@ -84,7 +103,6 @@ async def compute_portfolio_metrics(
     if returns.empty:
         raise ValueError("Insufficient price data for portfolio metrics")
 
-    # Portfolio returns
     port_returns = pd.Series(0.0, index=returns.index)
     for sym, w in weights.items():
         if sym in returns.columns:
@@ -92,22 +110,11 @@ async def compute_portfolio_metrics(
 
     bench_returns = returns[benchmark] if benchmark in returns.columns else pd.Series(0.0, index=returns.index)
 
-    # Beta
-    cov = np.cov(port_returns.dropna(), bench_returns.dropna())
-    beta = cov[0, 1] / cov[1, 1] if cov[1, 1] != 0 else 0.0
-
-    # VaR and CVaR
-    var_95 = float(np.percentile(port_returns, 5))
-    var_99 = float(np.percentile(port_returns, 1))
-    cvar_95 = float(port_returns[port_returns <= var_95].mean()) if (port_returns <= var_95).any() else 0.0
-
-    # Tracking error and information ratio
-    active_returns = port_returns - bench_returns
-    tracking_error = float(active_returns.std() * np.sqrt(252))
-    information_ratio = float(active_returns.mean() * 252 / tracking_error) if tracking_error > 0 else 0.0
+    var_95, var_99, cvar_95 = _compute_var_cvar(port_returns)
+    tracking_error, information_ratio = _compute_tracking_info(port_returns, bench_returns)
 
     return {
-        "beta": round(beta, 4),
+        "beta": round(_compute_beta(port_returns, bench_returns), 4),
         "var_95": round(var_95, 4),
         "var_99": round(var_99, 4),
         "cvar_95": round(cvar_95, 4),
@@ -156,18 +163,27 @@ async def monte_carlo_simulation(
     }
 
 
+async def _fetch_single_price(
+    provider: AbstractDataProvider, symbol: str, period: str
+) -> tuple[str, pd.Series | None]:
+    """Fetch closing price for a single symbol. Returns (symbol, Close | None)."""
+    try:
+        df = await provider.get_ohlcv(symbol, period=period)
+        return symbol, df["Close"] if not df.empty else None
+    except Exception as exc:
+        logger.warning("Failed to fetch prices for %s: %s", symbol, exc)
+        return symbol, None
+
+
 async def _fetch_prices(
     provider: AbstractDataProvider, symbols: list[str], period: str
 ) -> pd.DataFrame:
     """Fetch closing prices for multiple symbols."""
     prices: dict[str, pd.Series] = {}
     for sym in symbols:
-        try:
-            df = await provider.get_ohlcv(sym, period=period)
-            if not df.empty:
-                prices[sym] = df["Close"]
-        except Exception as exc:
-            logger.warning("Failed to fetch prices for %s: %s", sym, exc)
+        _, close = await _fetch_single_price(provider, sym, period)
+        if close is not None:
+            prices[sym] = close
     if not prices:
         raise ValueError("No price data fetched for any symbol")
     return pd.DataFrame(prices).dropna()
