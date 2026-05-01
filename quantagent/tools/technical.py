@@ -500,7 +500,7 @@ def _summarize_momentum(
     if macd_df is not None:
         macd_signal = (
             "bullish"
-            if macd_df.iloc[-1, 0] > macd_df.iloc[-1, 1]
+            if macd_df.iloc[-1, 0] > macd_df.iloc[-1, 1]  # type: ignore[operator, call-overload]
             else "bearish"
         )
     return {
@@ -518,7 +518,7 @@ def _summarize_volatility(
     bb_position = None
     if bb is not None and bb.iloc[-1, 2] != bb.iloc[-1, 0]:
         bb_position = round(
-            (close.iloc[-1] - bb.iloc[-1, 0]) / (bb.iloc[-1, 2] - bb.iloc[-1, 0]),
+            (close.iloc[-1] - bb.iloc[-1, 0]) / (bb.iloc[-1, 2] - bb.iloc[-1, 0]),  # type: ignore[operator, call-overload, arg-type]
             4,
         )
     return {
