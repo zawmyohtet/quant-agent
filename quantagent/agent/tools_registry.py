@@ -1,6 +1,7 @@
 """LangChain @tool wrappers for all quant tools."""
 from __future__ import annotations
 
+import inspect
 import json
 import logging
 from typing import Any
@@ -63,9 +64,14 @@ def _tool_error(tool_name: str, detail: str) -> str:
 def _bind_provider(func: Any, provider: Any) -> Any:
     """Wrap a ``(provider, ...)`` function into a @tool with provider injected.
 
-    The ``provider`` parameter is stripped from the LLM-visible schema so it
-    is not exposed as a tool argument.
+    Sets ``__signature__`` on the wrapper so langchain infer_schema sees the
+    real tool parameters instead of ``*args, **kwargs``.
     """
+    sig = inspect.signature(func)
+    tool_params = {
+        n: p for n, p in sig.parameters.items() if n != "provider"
+    }
+    new_sig = sig.replace(parameters=list(tool_params.values()))
     name = func.__name__.removeprefix("_")
 
     async def _wrapped(*args: Any, **kwargs: Any) -> str:
@@ -73,8 +79,9 @@ def _bind_provider(func: Any, provider: Any) -> Any:
 
     _wrapped.__name__ = name
     _wrapped.__doc__ = func.__doc__
+    _wrapped.__signature__ = new_sig  # type: ignore[attr-defined]
     _wrapped.__annotations__ = {
-        k: v for k, v in func.__annotations__.items() if k != "provider"
+        n: p.annotation for n, p in tool_params.items()
     }
     return tool(_wrapped)
 
