@@ -27,30 +27,69 @@ _WIKI_HEADERS = {
 }
 
 
+def _find_sp500_tickers(tables: list[pd.DataFrame]) -> list[str]:
+    return list(tables[0]["Symbol"].tolist())
+
+
+def _find_nasdaq100_tickers(tables: list[pd.DataFrame]) -> list[str]:
+    for table in tables:
+        for col in ["Ticker", "Symbol", " ticker"]:
+            if col in table.columns:
+                return list(table[col].dropna().astype(str).tolist())
+    return []
+
+
+_UNIVERSE_EXTRACTORS: dict[str, Callable[[list[pd.DataFrame]], list[str]]] = {
+    "sp500": _find_sp500_tickers,
+    "nasdaq100": _find_nasdaq100_tickers,
+}
+
+
 def _fetch_universe_tickers(universe: str) -> list[str]:
     """Fetch ticker list for a universe from Wikipedia."""
     url = _UNIVERSE_URLS.get(universe)
     if not url:
         logger.warning("Unknown universe: %s", universe)
         return []
-
     try:
         resp = requests.get(url, headers=_WIKI_HEADERS, timeout=30)
         resp.raise_for_status()
         tables = pd.read_html(StringIO(resp.text))
-        if universe == "sp500":
-            return list(tables[0]["Symbol"].tolist())
-        if universe == "nasdaq100":
-            # Nasdaq-100 table usually has 'Ticker' or 'Symbol' column
-            for table in tables:
-                for col in ["Ticker", "Symbol", " ticker"]:
-                    if col in table.columns:
-                        return list(table[col].dropna().astype(str).tolist())
+        extractor = _UNIVERSE_EXTRACTORS.get(universe)
+        if extractor is None:
             return []
+        return extractor(tables)
     except Exception as exc:
         logger.warning("Failed to fetch %s universe: %s", universe, exc)
         return []
-    return []
+
+
+async def _build_screening_row(
+    provider: AbstractDataProvider, ticker: str
+) -> dict | None:
+    """Fetch fundamentals + quote for a single ticker, or None on failure."""
+    try:
+        fundamentals = await provider.get_fundamentals(ticker)
+        quote = await provider.get_quote(ticker)
+        return {
+            "symbol": ticker,
+            "name": fundamentals.get("name", ""),
+            "pe_ratio": fundamentals.get("pe_ratio"),
+            "pb_ratio": fundamentals.get("pb_ratio"),
+            "roe": fundamentals.get("roe"),
+            "roa": fundamentals.get("roa"),
+            "debt_equity": fundamentals.get("debt_equity"),
+            "market_cap": quote.get("market_cap"),
+            "volume": quote.get("volume"),
+            "dividend_yield": fundamentals.get("dividend_yield"),
+            "revenue_growth": fundamentals.get("revenue_growth"),
+            "eps_growth": fundamentals.get("eps_growth"),
+            "beta": fundamentals.get("beta"),
+            "price": quote.get("price"),
+        }
+    except Exception as exc:
+        logger.debug("Skipping %s: %s", ticker, exc)
+        return None
 
 
 async def screen_stocks(
@@ -73,35 +112,12 @@ async def screen_stocks(
         logger.warning("No tickers found for universe: %s", universe)
         return pd.DataFrame()
 
-    # Limit screening scope for performance
     max_screen = min(len(tickers), 100)
-    tickers = tickers[:max_screen]
-
     rows = []
-    for ticker in tickers:
-        try:
-            fundamentals = await provider.get_fundamentals(ticker)
-            quote = await provider.get_quote(ticker)
-            row = {
-                "symbol": ticker,
-                "name": fundamentals.get("name", ""),
-                "pe_ratio": fundamentals.get("pe_ratio"),
-                "pb_ratio": fundamentals.get("pb_ratio"),
-                "roe": fundamentals.get("roe"),
-                "roa": fundamentals.get("roa"),
-                "debt_equity": fundamentals.get("debt_equity"),
-                "market_cap": quote.get("market_cap"),
-                "volume": quote.get("volume"),
-                "dividend_yield": fundamentals.get("dividend_yield"),
-                "revenue_growth": fundamentals.get("revenue_growth"),
-                "eps_growth": fundamentals.get("eps_growth"),
-                "beta": fundamentals.get("beta"),
-                "price": quote.get("price"),
-            }
+    for ticker in tickers[:max_screen]:
+        row = await _build_screening_row(provider, ticker)
+        if row is not None:
             rows.append(row)
-        except Exception as exc:
-            logger.debug("Skipping %s: %s", ticker, exc)
-            continue
 
     if not rows:
         return pd.DataFrame()
@@ -134,15 +150,21 @@ _CRITERIA_DISPATCH: dict[str, tuple[str, Callable[[Any, Any], bool]]] = {
 }
 
 
+def _apply_single_criterion(df: pd.DataFrame, key: str, value: Any) -> pd.DataFrame:
+    """Apply a single criterion filter, returning the filtered DataFrame."""
+    try:
+        column, oper = _CRITERIA_DISPATCH.get(key, (None, None))
+        if column is None:
+            logger.warning("Unknown criteria key: %s", key)
+            return df
+        return df[oper(df[column], value)]
+    except Exception as exc:
+        logger.warning("Failed to apply criteria %s: %s", key, exc)
+        return df
+
+
 def _apply_criteria(df: pd.DataFrame, criteria: dict[str, Any]) -> pd.DataFrame:
     """Apply screening criteria filters to a DataFrame."""
     for key, value in criteria.items():
-        try:
-            column, oper = _CRITERIA_DISPATCH.get(key, (None, None))
-            if column is None:
-                logger.warning("Unknown criteria key: %s", key)
-                continue
-            df = df[oper(df[column], value)]
-        except Exception as exc:
-            logger.warning("Failed to apply criteria %s: %s", key, exc)
+        df = _apply_single_criterion(df, key, value)
     return df
