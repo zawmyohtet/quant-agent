@@ -77,6 +77,14 @@ _INDICATOR_DISPATCH: dict[str, Callable[[pd.DataFrame, str], None]] = {
 }
 
 
+def _compute_single_indicator(result: pd.DataFrame, spec: str) -> None:
+    """Compute a single indicator, logging failures."""
+    try:
+        _dispatch_indicator(result, spec)
+    except Exception as exc:
+        logger.warning("Failed to compute indicator %s: %s", spec, exc)
+
+
 def compute_indicators(df: pd.DataFrame, indicators: list[str]) -> pd.DataFrame:
     """Compute technical indicators on OHLCV data.
 
@@ -91,10 +99,7 @@ def compute_indicators(df: pd.DataFrame, indicators: list[str]) -> pd.DataFrame:
     result = df.copy()
     for spec in indicators:
         spec = spec.lower().strip()
-        try:
-            _dispatch_indicator(result, spec)
-        except Exception as exc:
-            logger.warning("Failed to compute indicator %s: %s", spec, exc)
+        _compute_single_indicator(result, spec)
     return result
 
 
@@ -529,6 +534,14 @@ def _summarize_volume(df: pd.DataFrame) -> dict:
     }
 
 
+def _extract_adx_value(adx: Any) -> Any:
+    """Extract the latest scalar ADX value from the ADX DataFrame."""
+    if adx is None or adx.empty:
+        return None
+    adx_val = adx.iloc[-1]
+    return adx_val.iloc[-1] if hasattr(adx_val, "iloc") else adx_val
+
+
 def summarize_technicals(df: pd.DataFrame) -> dict:
     """Summarize technical analysis on a DataFrame.
 
@@ -546,17 +559,11 @@ def summarize_technicals(df: pd.DataFrame) -> dict:
     macd_df = df.ta.macd(append=False)
     bb = df.ta.bbands(length=20, append=False)
     atr = df.ta.atr(length=14, append=False)
-    adx = df.ta.adx(length=14, append=False)
-
-    adx_val = adx.iloc[-1] if adx is not None and not adx.empty else None
-    adx_value = (
-        adx_val.iloc[-1] if hasattr(adx_val, "iloc") else adx_val  # type: ignore[union-attr]
-    )
 
     return {
         "price": round(close.iloc[-1], 4),
         "trend": _summarize_trend(close, sma20, sma50, sma200),
         "momentum": _summarize_momentum(rsi, macd_df),
-        "volatility": _summarize_volatility(close, bb, atr, adx_value),
+        "volatility": _summarize_volatility(close, bb, atr, _extract_adx_value(df.ta.adx(length=14, append=False))),
         "volume": _summarize_volume(df),
     }
