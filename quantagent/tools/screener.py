@@ -157,7 +157,7 @@ def _apply_single_criterion(df: pd.DataFrame, key: str, value: Any) -> pd.DataFr
         if column is None:
             logger.warning("Unknown criteria key: %s", key)
             return df
-        return df[oper(df[column], value)]
+        return df[oper(df[column], value)]  # type: ignore[return-value, misc]
     except Exception as exc:
         logger.warning("Failed to apply criteria %s: %s", key, exc)
         return df
