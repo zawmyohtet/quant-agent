@@ -33,7 +33,7 @@ test: # Run tests
 	uv run pytest tests/ -v
 
 security: # Security scan with bandit
-	uv run bandit -c pyproject.toml -rquantagent 
+	uv run bandit -c pyproject.toml -r quantagent 
 
 ci: check test security # Full check: lint, test, security
 
