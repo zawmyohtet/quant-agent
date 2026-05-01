@@ -68,10 +68,5 @@ jobs:
 
       - name: SonarCloud Scan
         uses: SonarSource/sonarqube-scan-action@v7
-        with:
-          args: >
-            -Dsonar.projectKey=zawmyohtet_quant-agent
-            -Dsonar.organization=zawmyohtet
-            -Dsonar.python.coverage.reportPaths=coverage.xml
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
