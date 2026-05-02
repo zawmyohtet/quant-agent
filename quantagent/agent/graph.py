@@ -11,6 +11,7 @@ from deepagents.backends.filesystem import FilesystemBackend
 from langchain.chat_models import init_chat_model
 
 from quantagent.agent.middleware.approval import ApprovalMiddleware
+from quantagent.agent.middleware.error_logging import ErrorLoggingMiddleware
 from quantagent.agent.middleware.memory import QuantMemoryMiddleware
 from quantagent.agent.middleware.summarization import SummarizationMiddleware
 from quantagent.agent.prompts import BASE_SYSTEM_PROMPT
@@ -72,6 +73,7 @@ def create_quant_agent(
     backend = FilesystemBackend(root_dir=str(BACKEND_ROOT))
 
     middleware = [
+        ErrorLoggingMiddleware(),
         QuantMemoryMiddleware(),
         SummarizationMiddleware(token_threshold=80_000, model=model),
     ]
