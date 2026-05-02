@@ -16,9 +16,15 @@ QuantAgent is a terminal UI application that lets you chat with an AI agent to a
 - **Technical Analysis** — SMA, EMA, RSI, MACD, Bollinger Bands, ATR, ADX, OBV, Stochastic, VWAP, Supertrend, plus candlestick pattern detection and support/resistance levels.
 - **Fundamental Analysis** — DCF valuation, Piotroski F-Score, Altman Z-Score, peer comparison, Magic Formula ranking.
 - **Backtesting** — Built-in strategies (SMA/EMA crossover, RSI mean reversion, MACD momentum, Bollinger breakout) with Sharpe, drawdown, win rate, and walk-forward validation.
-- **Portfolio Tools** — Optimize weights (max Sharpe, min vol, risk parity), compute risk metrics (beta, VaR, CVaR), and run Monte Carlo simulations.
+- **Portfolio Tools** — Optimize weights (max Sharpe, min vol, risk parity, equal weight), compute risk metrics (beta, VaR, CVaR), and run Monte Carlo simulations.
 - **Stock Screener** — Filter S&P 500 and Nasdaq-100 by fundamentals and technicals.
 - **Human-in-the-Loop** — Approve sensitive actions like backtests and portfolio optimization before they run.
+
+## ⚠️ Important Disclaimer
+
+- **For Informational Purposes Only:** This project does **NOT** constitute financial advice, investment advice, or a recommendation to buy or sell any security.
+- **Advisory Only:** QuantAgent is strictly an advisory tool and does not execute automated trades. It provides data-driven insights and trade plans for human review.
+- **Risk Warning:** All investments carry risk, including possible loss of principal. Past performance is not indicative of future results.
 
 ## Quick Start
 
@@ -137,6 +143,10 @@ Switch providers anytime with `/provider <name>`.
 ## Skills
 
 Skills are on-demand domain knowledge modules (backtesting, risk management, indicator playbooks). The agent loads only the skills relevant to your question, keeping context lean. You can override built-in skills or add your own in `~/.quantagent/skills/`.
+
+## Acknowledgements
+
+The **terminal UX, slash-command model, and overall CLI shape** are intentionally inspired by **[deepagents-cli](https://github.com/langchain-ai/deepagents/tree/main/libs/cli)** (the reference Deep Agents terminal experience) and **[OpenCode](https://opencode.ai)**. QuantAgent is a **separate, quant-specialized** codebase that depends on the same SDK—not a fork of the CLI library.
 
 ## License
 
