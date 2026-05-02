@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 
 from langchain.agents.middleware.types import AgentMiddleware
 from langchain.messages import ToolMessage
@@ -30,6 +30,30 @@ class ErrorLoggingMiddleware(AgentMiddleware):
         """Wrap tool execution — log errors, return error message to LLM."""
         try:
             return handler(request)
+        except Exception as exc:
+            tool_name = request.tool_call["name"]
+            tool_args = request.tool_call.get("args", {})
+            logger.error(
+                "Tool '%s' failed.  args=%s  error=%s: %s",
+                tool_name,
+                tool_args,
+                type(exc).__name__,
+                exc,
+                exc_info=True,
+            )
+            return ToolMessage(
+                content=f"Error in {tool_name}: {exc}",
+                tool_call_id=request.tool_call["id"],
+            )
+
+    async def awrap_tool_call(
+        self,
+        request: ToolCallRequest,
+        handler: Callable[[ToolCallRequest], Awaitable[ToolMessage | Command]],
+    ) -> ToolMessage | Command:
+        """Async wrap tool execution — log errors, return error message to LLM."""
+        try:
+            return await handler(request)
         except Exception as exc:
             tool_name = request.tool_call["name"]
             tool_args = request.tool_call.get("args", {})
