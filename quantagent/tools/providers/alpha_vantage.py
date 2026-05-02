@@ -7,8 +7,9 @@ from datetime import UTC, datetime, timedelta
 
 import pandas as pd
 from alpha_vantage.alphaintelligence import AlphaIntelligence  # type: ignore[import-untyped]
+from alpha_vantage.alphavantage import AlphaVantage  # type: ignore[import-untyped]
+from alpha_vantage.econindicators import EconIndicators  # type: ignore[import-untyped]
 from alpha_vantage.fundamentaldata import FundamentalData  # type: ignore[import-untyped]
-from alpha_vantage.sectorperformance import SectorPerformances  # type: ignore[import-untyped]
 from alpha_vantage.timeseries import TimeSeries  # type: ignore[import-untyped]
 
 from quantagent.tools.providers.base import AbstractDataProvider
@@ -26,7 +27,8 @@ class AlphaVantageProvider(AbstractDataProvider):
         self._ts = TimeSeries(key=api_key, output_format="pandas")
         self._fd = FundamentalData(key=api_key, output_format="pandas")
         self._ai = AlphaIntelligence(key=api_key)
-        self._sp = SectorPerformances(key=api_key, output_format="pandas")
+        self._ei = EconIndicators(key=api_key, output_format="pandas")
+        self._base = AlphaVantage(key=api_key, output_format="json")
 
     async def get_ohlcv(
         self, symbol: str, period: str = "1y", interval: str = "1d"
@@ -172,8 +174,10 @@ class AlphaVantageProvider(AbstractDataProvider):
         return results
 
     async def get_sector_performance(self) -> dict:
-        """Fetch sector performance via Alpha Vantage SectorPerformances API."""
-        data, _ = await asyncio.to_thread(self._sp.get_sector)
+        """Fetch sector performance via Alpha Vantage SECTOR endpoint."""
+        data, _ = await asyncio.to_thread(
+            self._base._handle_api_call, "function=SECTOR"
+        )
         if not isinstance(data, dict):
             return {}
         rank_meta = data.get("rank_a", {})
@@ -208,14 +212,14 @@ class AlphaVantageProvider(AbstractDataProvider):
             "cpi": None,
             "unemployment_rate": None,
         }
-        ten_y = await _fetch_treasury_yield(self._ts, "10year")
-        two_y = await _fetch_treasury_yield(self._ts, "2year")
+        ten_y = await _fetch_treasury_yield(self._ei, "10year")
+        two_y = await _fetch_treasury_yield(self._ei, "2year")
         indicators["10y_yield"] = ten_y
         indicators["2y_yield"] = two_y
-        indicators["gdp_growth"] = await _fetch_economic_indicator(self._ts, "real_gdp")
-        indicators["cpi"] = await _fetch_economic_indicator(self._ts, "cpi")
+        indicators["gdp_growth"] = await _fetch_economic_indicator(self._ei, "real_gdp")
+        indicators["cpi"] = await _fetch_economic_indicator(self._ei, "cpi")
         indicators["unemployment_rate"] = await _fetch_economic_indicator(
-            self._ts, "unemployment"
+            self._ei, "unemployment"
         )
         logger.warning("vix and sp500_pe not available via Alpha Vantage")
         return indicators
@@ -231,23 +235,28 @@ def _av_pct_val(val: str | None) -> float | None:
         return None
 
 
-async def _fetch_treasury_yield(ts: TimeSeries, maturity: str) -> float | None:
+async def _fetch_treasury_yield(ei: EconIndicators, maturity: str) -> float | None:
     """Fetch latest treasury yield for a given maturity."""
-    data, _ = await asyncio.to_thread(
-        ts.get_treasury_yield, interval="monthly", maturity=maturity
-    )
+    data, _ = await asyncio.to_thread(ei.get_treasury_yield, interval="monthly", maturity=maturity)
     if not isinstance(data, pd.DataFrame) or data.empty:
         return None
     return round(float(data.iloc[-1]["value"]), 4)
 
 
-async def _fetch_economic_indicator(ts: TimeSeries, name: str) -> float | None:
+async def _fetch_economic_indicator(ei: EconIndicators, name: str) -> float | None:
     """Fetch latest value for an economic indicator."""
+    fetch_fn = {
+        "real_gdp": ei.get_real_gdp,
+        "cpi": ei.get_cpi,
+        "unemployment": ei.get_unemployment,
+    }.get(name)
+    if fetch_fn is None:
+        return None
     try:
-        data, _ = await asyncio.to_thread(ts.get_economic_indicator, name=name)
+        data, _ = await asyncio.to_thread(fetch_fn)
         if not isinstance(data, pd.DataFrame) or data.empty:
             return None
-        return round(float(data.iloc[-1][name]), 4)
+        return round(float(data.iloc[-1]["value"]), 4)
     except Exception:
         logger.warning("Failed to fetch economic indicator: %s", name)
         return None

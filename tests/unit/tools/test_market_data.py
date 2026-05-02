@@ -4,7 +4,15 @@ from __future__ import annotations
 import pandas as pd
 import pytest
 
-from quantagent.tools.market_data import get_fundamentals, get_news, get_ohlcv, get_quote
+from quantagent.tools.market_data import (
+    get_earnings_calendar,
+    get_economic_indicators,
+    get_fundamentals,
+    get_news,
+    get_ohlcv,
+    get_quote,
+    get_sector_performance,
+)
 from quantagent.tools.providers.base import AbstractDataProvider
 
 
@@ -46,6 +54,44 @@ class MockProvider(AbstractDataProvider):
             }
         ]
 
+    async def get_earnings_calendar(
+        self, symbol: str, lookahead_days: int = 90
+    ) -> list[dict]:
+        return [
+            {
+                "symbol": symbol.upper(),
+                "date": "2024-04-15T00:00:00+00:00",
+                "eps_estimate": 1.50,
+                "eps_actual": None,
+                "quarter": "Q1-2024",
+            }
+        ]
+
+    async def get_sector_performance(self) -> dict:
+        return {
+            "Technology": {
+                "etf": "XLK",
+                "price": 180.0,
+                "performance_1d": 0.01,
+                "performance_1w": 0.02,
+                "performance_1m": 0.05,
+                "performance_3m": 0.10,
+                "performance_ytd": 0.15,
+                "best_stock": None,
+            }
+        }
+
+    async def get_economic_indicators(self) -> dict:
+        return {
+            "vix": 18.5,
+            "10y_yield": 0.0425,
+            "2y_yield": 0.0450,
+            "sp500_pe": 22.0,
+            "gdp_growth": 0.025,
+            "cpi": 310.0,
+            "unemployment_rate": 0.038,
+        }
+
 
 @pytest.fixture
 def mock_provider():
@@ -78,3 +124,28 @@ async def test_get_news(mock_provider: MockProvider):
     result = await get_news(mock_provider, "test")
     assert len(result) == 1
     assert result[0]["title"] == "Test News"
+
+
+@pytest.mark.asyncio
+async def test_get_earnings_calendar(mock_provider: MockProvider):
+    result = await get_earnings_calendar(mock_provider, "test")
+    assert len(result) == 1
+    assert result[0]["symbol"] == "TEST"
+    assert result[0]["eps_estimate"] == 1.50
+    assert result[0]["eps_actual"] is None
+
+
+@pytest.mark.asyncio
+async def test_get_sector_performance(mock_provider: MockProvider):
+    result = await get_sector_performance(mock_provider)
+    assert "Technology" in result
+    assert result["Technology"]["etf"] == "XLK"
+    assert result["Technology"]["performance_1d"] == 0.01
+
+
+@pytest.mark.asyncio
+async def test_get_economic_indicators(mock_provider: MockProvider):
+    result = await get_economic_indicators(mock_provider)
+    assert result["vix"] == 18.5
+    assert result["10y_yield"] == 0.0425
+    assert result["unemployment_rate"] == 0.038
