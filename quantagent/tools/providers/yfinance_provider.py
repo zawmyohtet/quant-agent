@@ -12,6 +12,27 @@ from quantagent.tools.providers.base import AbstractDataProvider
 
 logger = logging.getLogger(__name__)
 
+_SECTOR_ETFS: dict[str, str] = {
+    "Technology": "XLK",
+    "Healthcare": "XLV",
+    "Financials": "XLF",
+    "Consumer Discretionary": "XLY",
+    "Consumer Staples": "XLP",
+    "Energy": "XLE",
+    "Industrials": "XLI",
+    "Materials": "XLB",
+    "Real Estate": "XLRE",
+    "Utilities": "XLU",
+    "Communication Services": "XLC",
+}
+
+_ECON_TICKERS: dict[str, str] = {
+    "vix": "^VIX",
+    "10y_yield": "^TNX",
+    "2y_yield": "^IRX",
+    "sp500": "^GSPC",
+}
+
 
 class YFinanceProvider(AbstractDataProvider):
     """Free market data via yfinance (Yahoo Finance)."""
@@ -112,3 +133,126 @@ class YFinanceProvider(AbstractDataProvider):
                 }
             )
         return results
+
+    async def get_earnings_calendar(
+        self, symbol: str, lookahead_days: int = 90
+    ) -> list[dict]:
+        """Fetch upcoming earnings dates via yfinance calendar."""
+        ticker = yf.Ticker(symbol.upper())
+        cal = await asyncio.to_thread(lambda: ticker.calendar)
+        if not cal or "Earnings Date" not in cal:
+            return []
+        earnings_dates = cal.get("Earnings Date", [])
+        if not isinstance(earnings_dates, list):
+            earnings_dates = [earnings_dates]
+        cutoff = datetime.now(UTC) + timedelta(days=lookahead_days)
+        results = []
+        for date_val in earnings_dates:
+            if isinstance(date_val, (int, float)):
+                dt = datetime.fromtimestamp(date_val, tz=UTC)
+            elif isinstance(date_val, datetime):
+                dt = date_val if date_val.tzinfo else date_val.replace(tzinfo=UTC)
+            else:
+                continue
+            if dt > cutoff:
+                continue
+            results.append(
+                {
+                    "symbol": symbol.upper(),
+                    "date": dt.isoformat(),
+                    "eps_estimate": None,
+                    "eps_actual": None,
+                    "quarter": f"Q{dt.month // 3 + 1}-{dt.year}",
+                }
+            )
+        return results
+
+    async def get_sector_performance(self) -> dict:
+        """Compute sector performance from Sector SPDR ETFs."""
+        results: dict[str, dict] = {}
+        for sector_name, etf_symbol in _SECTOR_ETFS.items():
+            ticker = yf.Ticker(etf_symbol)
+            hist: pd.DataFrame = await asyncio.to_thread(
+                ticker.history, period="1y", interval="1d"
+            )
+            if hist.empty:
+                logger.warning("No data for sector ETF %s (%s)", etf_symbol, sector_name)
+                continue
+            close = hist["Close"]
+            if len(close) < 5:
+                continue
+            latest = close.iloc[-1]
+            perf_1d = _pct_change(close, 1)
+            perf_1w = _pct_change(close, 5)
+            perf_1m = _pct_change(close, 21)
+            perf_3m = _pct_change(close, 63)
+            perf_ytd = _ytd_return(close)
+            results[sector_name] = {
+                "etf": etf_symbol,
+                "price": round(float(latest), 4),
+                "performance_1d": round(perf_1d, 4) if perf_1d is not None else None,
+                "performance_1w": round(perf_1w, 4) if perf_1w is not None else None,
+                "performance_1m": round(perf_1m, 4) if perf_1m is not None else None,
+                "performance_3m": round(perf_3m, 4) if perf_3m is not None else None,
+                "performance_ytd": round(perf_ytd, 4) if perf_ytd is not None else None,
+                "best_stock": None,
+            }
+        return results
+
+    async def get_economic_indicators(self) -> dict:
+        """Fetch economic indicators via yfinance tickers."""
+        indicators: dict[str, float | None] = {
+            "vix": None,
+            "10y_yield": None,
+            "2y_yield": None,
+            "sp500_pe": None,
+            "gdp_growth": None,
+            "cpi": None,
+            "unemployment_rate": None,
+        }
+        vix_symbol = _ECON_TICKERS["vix"]
+        tn10_symbol = _ECON_TICKERS["10y_yield"]
+        irx_symbol = _ECON_TICKERS["2y_yield"]
+        sp500_symbol = _ECON_TICKERS["sp500"]
+
+        async def _fetch_latest(symbol: str) -> float | None:
+            ticker = yf.Ticker(symbol)
+            hist: pd.DataFrame = await asyncio.to_thread(
+                ticker.history, period="5d", interval="1d"
+            )
+            if hist.empty:
+                return None
+            return round(float(hist["Close"].iloc[-1]), 4)
+
+        vix = await _fetch_latest(vix_symbol)
+        tn10 = await _fetch_latest(tn10_symbol)
+        irx = await _fetch_latest(irx_symbol)
+        sp500 = await _fetch_latest(sp500_symbol)
+
+        indicators["vix"] = vix
+        indicators["10y_yield"] = round(tn10 / 10, 4) if tn10 else None
+        indicators["2y_yield"] = round(irx / 10, 4) if irx else None
+        indicators["sp500_pe"] = sp500
+
+        logger.warning(
+            "gdp_growth, cpi, unemployment_rate not available via yfinance"
+        )
+        return indicators
+
+
+def _pct_change(series: pd.Series, periods: int) -> float | None:
+    """Compute percentage change over N periods."""
+    if len(series) <= periods:
+        return None
+    return float(series.iloc[-1] / series.iloc[-(periods + 1)] - 1)
+
+
+def _ytd_return(series: pd.Series) -> float | None:
+    """Compute year-to-date return."""
+    now = datetime.now(UTC)
+    ytd_start = datetime(now.year, 1, 1, tzinfo=UTC)
+    ytd_mask = series.index >= ytd_start
+    ytd_data = series[ytd_mask]
+    if len(ytd_data) < 2:
+        return None
+    return float(ytd_data.iloc[-1] / ytd_data.iloc[0] - 1)
