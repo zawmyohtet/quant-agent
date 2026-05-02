@@ -43,6 +43,17 @@ class MockProvider(AbstractDataProvider):
     async def get_news(self, symbol: str, days: int = 7) -> list[dict]:
         return []
 
+    async def get_earnings_calendar(
+        self, symbol: str, lookahead_days: int = 90
+    ) -> list[dict]:
+        return []
+
+    async def get_sector_performance(self) -> dict:
+        return {}
+
+    async def get_economic_indicators(self) -> dict:
+        return {}
+
 
 @pytest.fixture
 def mock_provider():
