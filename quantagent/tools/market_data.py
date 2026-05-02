@@ -34,9 +34,9 @@ async def get_earnings_calendar(
     provider: AbstractDataProvider, symbol: str, lookahead_days: int = 90
 ) -> list[dict]:
     """Fetch upcoming earnings dates."""
-    # Not all providers expose earnings calendars directly.
-    logger.warning("earnings_calendar not implemented for %s", provider.__class__.__name__)
-    return []
+    return await provider.get_earnings_calendar(
+        symbol.upper(), lookahead_days=lookahead_days
+    )
 
 
 async def get_news(
@@ -53,11 +53,9 @@ async def search_symbols(provider: AbstractDataProvider, query: str) -> list[dic
 
 async def get_sector_performance(provider: AbstractDataProvider) -> dict:
     """Fetch sector performance data."""
-    logger.warning("sector_performance not implemented for %s", provider.__class__.__name__)
-    return {}
+    return await provider.get_sector_performance()
 
 
 async def get_economic_indicators(provider: AbstractDataProvider) -> dict:
     """Fetch economic indicators (VIX, yields, etc.)."""
-    logger.warning("economic_indicators not implemented for %s", provider.__class__.__name__)
-    return {}
+    return await provider.get_economic_indicators()
