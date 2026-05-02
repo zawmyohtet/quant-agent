@@ -1,6 +1,7 @@
 """Tests for QuantAgentApp wiring (loading indicator + interrupt)."""
 from __future__ import annotations
 
+import re
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -19,6 +20,8 @@ from quantagent.tui.app import (
 )
 from quantagent.tui.config import QuantAgentConfig
 
+_VALID_ID_RE = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_-]*$")
+
 
 @pytest.fixture
 def app() -> QuantAgentApp:
@@ -27,6 +30,14 @@ def app() -> QuantAgentApp:
 
 
 class TestAppWiring:
+    def test_compose_yields_widgets_with_valid_ids(self, app: QuantAgentApp) -> None:
+        widgets = list(app.compose())
+        assert len(widgets) == 4
+        for widget in widgets:
+            assert widget.id is not None, "Widget id must not be None"
+            assert "#" not in widget.id, f"Widget id must not contain '#': {widget.id!r}"
+            assert _VALID_ID_RE.match(widget.id), f"Invalid widget id: {widget.id!r}"
+
     @pytest.mark.asyncio
     async def test_submit_user_message_sets_running_and_refreshes_status_and_footer(
         self, app: QuantAgentApp
