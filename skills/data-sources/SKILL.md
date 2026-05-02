@@ -10,7 +10,7 @@ license: MIT
 metadata:
   author: quantagent
   version: "1.0"
-allowed-tools: get_stock_quote, get_ohlcv_data, get_stock_fundamentals
+allowed-tools: get_stock_quote, get_ohlcv_data, get_stock_fundamentals, get_earnings_calendar, get_sector_performance, get_economic_indicators
 ---
 
 # Data Sources
@@ -31,6 +31,9 @@ required fields. Never assume all providers return the same fields.
 | Options chain | ✅ | ❌ | ✅ |
 | Crypto | ✅ | ✅ | ✅ |
 | News | ✅ | ✅ | ✅ |
+| Earnings calendar | ⚠️ next date only | ✅ | ✅ |
+| Sector performance | ✅ via ETFs | ✅ native | ✅ via ETFs |
+| Economic indicators | ⚠️ VIX, yields only | ✅ full | ❌ |
 
 ## Rate Limits
 - yfinance: ~2000 requests/hour; no API key required
@@ -39,7 +42,10 @@ required fields. Never assume all providers return the same fields.
 
 ## Known Limitations
 - yfinance: dividend and split data may lag by 1 trading day
+- yfinance: earnings calendar returns only the next earnings date, not a full calendar
+- yfinance: economic indicators limited to VIX and treasury yields; GDP/CPI/unemployment unavailable
 - alpha_vantage: free tier makes full stock screening impractical
+- polygon: economic indicators not available (equity-focused API)
 - All providers: intraday data older than 60 days may be incomplete
 - Fundamentals coverage varies — always check if fields are None before using them
 
