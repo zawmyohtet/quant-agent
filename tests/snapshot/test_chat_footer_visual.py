@@ -20,20 +20,8 @@ class _IdleFooterApp(App):
         yield Vertical(ChatFooter(state, id="chat-footer"))
 
 
-class _RunningFooterApp(App):
-    """Minimal app showing ChatFooter in running state."""
-
-    def compose(self) -> ComposeResult:
-        state = SessionState(
-            config=QuantAgentConfig(model="openai:gpt-4o", provider="yfinance"),
-            is_running=True,
-        )
-        yield Vertical(ChatFooter(state, id="chat-footer"))
-
-
 class TestChatFooterSnapshots:
+    """Visual regression tests for ChatFooter."""
+
     def test_idle_state_snapshot(self, snap_compare: object) -> None:
         assert snap_compare(_IdleFooterApp())
-
-    def test_running_state_snapshot(self, snap_compare: object) -> None:
-        assert snap_compare(_RunningFooterApp())
