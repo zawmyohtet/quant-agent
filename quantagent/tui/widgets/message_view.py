@@ -90,7 +90,7 @@ class MessageView(ScrollableContainer):
         self._all_entries.clear()
         self._dom_map.clear()
         self._agent_buffer_id = None
-        for child in list(self.children):
+        for child in self.children:
             child.remove()
 
     def last_user_message(self) -> str | None:
@@ -147,7 +147,7 @@ class MessageView(ScrollableContainer):
     def _enforce_limit(self) -> None:
         while len(self.children) > _MAX_DOM_MESSAGES:
             oldest = self.children[0]
-            for mid, w in list(self._dom_map.items()):
+            for mid, w in self._dom_map.items():
                 if w is oldest:
                     del self._dom_map[mid]
                     break
