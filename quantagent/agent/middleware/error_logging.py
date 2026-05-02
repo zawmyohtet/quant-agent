@@ -22,6 +22,25 @@ class ErrorLoggingMiddleware(AgentMiddleware):
     agent can handle the failure gracefully.
     """
 
+    def _handle_tool_error(
+        self, request: ToolCallRequest, exc: Exception
+    ) -> ToolMessage | Command:
+        """Log the error and return a ToolMessage for the LLM."""
+        tool_name = request.tool_call["name"]
+        tool_args = request.tool_call.get("args", {})
+        logger.error(
+            "Tool '%s' failed.  args=%s  error=%s: %s",
+            tool_name,
+            tool_args,
+            type(exc).__name__,
+            exc,
+            exc_info=True,
+        )
+        return ToolMessage(
+            content=f"Error in {tool_name}: {exc}",
+            tool_call_id=request.tool_call["id"],
+        )
+
     def wrap_tool_call(
         self,
         request: ToolCallRequest,
@@ -31,20 +50,7 @@ class ErrorLoggingMiddleware(AgentMiddleware):
         try:
             return handler(request)
         except Exception as exc:
-            tool_name = request.tool_call["name"]
-            tool_args = request.tool_call.get("args", {})
-            logger.error(
-                "Tool '%s' failed.  args=%s  error=%s: %s",
-                tool_name,
-                tool_args,
-                type(exc).__name__,
-                exc,
-                exc_info=True,
-            )
-            return ToolMessage(
-                content=f"Error in {tool_name}: {exc}",
-                tool_call_id=request.tool_call["id"],
-            )
+            return self._handle_tool_error(request, exc)
 
     async def awrap_tool_call(
         self,
@@ -55,17 +61,4 @@ class ErrorLoggingMiddleware(AgentMiddleware):
         try:
             return await handler(request)
         except Exception as exc:
-            tool_name = request.tool_call["name"]
-            tool_args = request.tool_call.get("args", {})
-            logger.error(
-                "Tool '%s' failed.  args=%s  error=%s: %s",
-                tool_name,
-                tool_args,
-                type(exc).__name__,
-                exc,
-                exc_info=True,
-            )
-            return ToolMessage(
-                content=f"Error in {tool_name}: {exc}",
-                tool_call_id=request.tool_call["id"],
-            )
+            return self._handle_tool_error(request, exc)

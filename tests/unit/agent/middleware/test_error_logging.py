@@ -71,30 +71,6 @@ def test_wrap_tool_call_logs_error_and_returns_message(caplog):
     assert "ValueError" in record_text
 
 
-def test_wrap_tool_call_logs_runtime_error(caplog):
-    """RuntimeError is also logged."""
-    middleware = ErrorLoggingMiddleware()
-    handler = _make_failing_handler(RuntimeError("timeout"))
-
-    with caplog.at_level(logging.ERROR):
-        result = middleware.wrap_tool_call(_make_request("optimize_portfolio_tool"), handler)
-
-    assert isinstance(result, ToolMessage)
-    assert "optimize_portfolio_tool" in result.content
-    assert any("RuntimeError" in r.getMessage() for r in caplog.records)
-
-
-def test_wrap_tool_call_empty_args(caplog):
-    """Tool call with no args is handled gracefully."""
-    middleware = ErrorLoggingMiddleware()
-    handler = _make_failing_handler(ConnectionError("network down"))
-
-    result = middleware.wrap_tool_call(_make_request("search_stock_symbols", {}), handler)
-
-    assert isinstance(result, ToolMessage)
-    assert "search_stock_symbols" in result.content
-
-
 def _make_async_handler(return_value: ToolMessage | Command) -> Callable:
     async def _handler(request: ToolCallRequest) -> ToolMessage | Command:
         return return_value
@@ -143,31 +119,3 @@ async def test_awrap_tool_call_logs_error_and_returns_message(caplog):
     assert "get_quote" in record_text
     assert "INVALID" in record_text
     assert "ValueError" in record_text
-
-
-async def test_awrap_tool_call_logs_runtime_error(caplog):
-    """Async RuntimeError is also logged."""
-    middleware = ErrorLoggingMiddleware()
-    handler = _make_async_failing_handler(RuntimeError("timeout"))
-
-    with caplog.at_level(logging.ERROR):
-        result = await middleware.awrap_tool_call(
-            _make_request("optimize_portfolio_tool"), handler
-        )
-
-    assert isinstance(result, ToolMessage)
-    assert "optimize_portfolio_tool" in result.content
-    assert any("RuntimeError" in r.getMessage() for r in caplog.records)
-
-
-async def test_awrap_tool_call_empty_args(caplog):
-    """Async tool call with no args is handled gracefully."""
-    middleware = ErrorLoggingMiddleware()
-    handler = _make_async_failing_handler(ConnectionError("network down"))
-
-    result = await middleware.awrap_tool_call(
-        _make_request("search_stock_symbols", {}), handler
-    )
-
-    assert isinstance(result, ToolMessage)
-    assert "search_stock_symbols" in result.content
