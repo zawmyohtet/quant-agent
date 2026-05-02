@@ -45,6 +45,7 @@ class ThreadSelectorScreen(ModalScreen):
     def __init__(self, **kwargs: Any) -> None:
         super().__init__(**kwargs)
         self._threads: list[dict] = []
+        self._delete_task: asyncio.Task[None] | None = None
 
     async def on_mount(self) -> None:
         state: SessionState = cast("QuantAgentApp", self.app).state
@@ -74,7 +75,7 @@ class ThreadSelectorScreen(ModalScreen):
     def on_key(self, event: Key) -> None:
         if event.key == "delete":
             event.stop()
-            asyncio.create_task(self._delete_current())
+            self._delete_task = asyncio.create_task(self._delete_current())
         elif event.key == "escape":
             self.dismiss()
 

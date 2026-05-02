@@ -87,6 +87,7 @@ class AgentRunner:
             await self._current_task
         except asyncio.CancelledError:
             await self._queue.put(SystemNotification(text="Turn cancelled."))
+            raise
         except Exception as exc:
             logger.exception("Error in run_turn")
             await self._queue.put(AgentError(message=str(exc), retryable=True))
