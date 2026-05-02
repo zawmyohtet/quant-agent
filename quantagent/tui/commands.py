@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import inspect
 import logging
 import os
 from collections.abc import Awaitable, Callable
@@ -25,11 +26,11 @@ class SlashCommand:
     name: str
     usage: str
     description: str
-    handler: Callable[[list[str], QuantAgentApp], Awaitable[None]]
+    handler: Callable[[list[str], QuantAgentApp], None | Awaitable[None]]
     aliases: list[str] = field(default_factory=list)
 
 
-async def _handle_model(args: list[str], app: QuantAgentApp) -> None:
+def _handle_model(args: list[str], app: QuantAgentApp) -> None:
     if not args:
         _system(app, "Usage: /model <provider:model>")
         return
@@ -40,7 +41,7 @@ async def _handle_model(args: list[str], app: QuantAgentApp) -> None:
     _refresh_status(app)
 
 
-async def _handle_provider(args: list[str], app: QuantAgentApp) -> None:
+def _handle_provider(args: list[str], app: QuantAgentApp) -> None:
     if not args:
         _system(app, "Usage: /provider <name>")
         return
@@ -51,7 +52,7 @@ async def _handle_provider(args: list[str], app: QuantAgentApp) -> None:
     _refresh_status(app)
 
 
-async def _handle_apikey(args: list[str], app: QuantAgentApp) -> None:
+def _handle_apikey(args: list[str], app: QuantAgentApp) -> None:
     if len(args) < 2:
         _system(app, "Usage: /apikey <provider> <key>")
         return
@@ -80,7 +81,7 @@ async def _handle_apikey(args: list[str], app: QuantAgentApp) -> None:
     _system(app, f"API key for {provider} saved.")
 
 
-async def _handle_new(args: list[str], app: QuantAgentApp) -> None:
+def _handle_new(args: list[str], app: QuantAgentApp) -> None:
     app.state.new_thread()
     messages = app.query_one("#messages", MessageView)
     messages.clear()
@@ -88,19 +89,19 @@ async def _handle_new(args: list[str], app: QuantAgentApp) -> None:
     _refresh_status(app)
 
 
-async def _handle_threads(args: list[str], app: QuantAgentApp) -> None:
+def _handle_threads(args: list[str], app: QuantAgentApp) -> None:
     from quantagent.tui.widgets.thread_selector import ThreadSelectorScreen
 
     app.push_screen(ThreadSelectorScreen())
 
 
-async def _handle_clear(args: list[str], app: QuantAgentApp) -> None:
+def _handle_clear(args: list[str], app: QuantAgentApp) -> None:
     messages = app.query_one("#messages", MessageView)
     messages.clear()
     _system(app, "Messages cleared.")
 
 
-async def _handle_export(args: list[str], app: QuantAgentApp) -> None:
+def _handle_export(args: list[str], app: QuantAgentApp) -> None:
     thread_id = app.state.thread_id
     default_path = Path.home() / f"quantagent-{thread_id}.md"
     path = Path(args[0]) if args else default_path
@@ -110,7 +111,7 @@ async def _handle_export(args: list[str], app: QuantAgentApp) -> None:
     _system(app, f"Thread exported to {path}")
 
 
-async def _handle_stop(args: list[str], app: QuantAgentApp) -> None:
+def _handle_stop(args: list[str], app: QuantAgentApp) -> None:
     if hasattr(app, "runner") and app.runner:
         app.runner.cancel()
     _system(app, "Agent turn cancelled.")
@@ -125,7 +126,7 @@ async def _handle_retry(args: list[str], app: QuantAgentApp) -> None:
         _system(app, "No previous user message to retry.")
 
 
-async def _handle_memory(args: list[str], app: QuantAgentApp) -> None:
+def _handle_memory(args: list[str], app: QuantAgentApp) -> None:
     memory_path = _DEFAULT_CONFIG_DIR / "QUANTAGENT.md"
     if memory_path.exists():
         content = memory_path.read_text()
@@ -134,7 +135,7 @@ async def _handle_memory(args: list[str], app: QuantAgentApp) -> None:
         _system(app, "No QUANTAGENT.md found. Create one at ~/.quantagent/QUANTAGENT.md")
 
 
-async def _handle_approve(args: list[str], app: QuantAgentApp) -> None:
+def _handle_approve(args: list[str], app: QuantAgentApp) -> None:
     app.state.pre_approve_next = True
     _system(app, "Next tool call will be auto-approved.")
 
@@ -171,7 +172,7 @@ async def _handle_compare(args: list[str], app: QuantAgentApp) -> None:
     await app._submit_user_message(f"Compare {symbols}")
 
 
-async def _handle_help(args: list[str], app: QuantAgentApp) -> None:
+def _handle_help(args: list[str], app: QuantAgentApp) -> None:
     if args:
         name = args[0].lstrip("/")
         cmd = find_command(name)
@@ -255,6 +256,8 @@ async def dispatch(raw: str, app: QuantAgentApp) -> None:
     name, *args = parts
     cmd = find_command(name)
     if cmd:
-        await cmd.handler(args, app)
+        result = cmd.handler(args, app)
+        if inspect.isawaitable(result):
+            await result
     else:
         _system(app, f"Unknown command: /{name}. Type /help for available commands.")
