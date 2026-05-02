@@ -13,6 +13,20 @@ from quantagent.tools.providers.base import AbstractDataProvider
 
 logger = logging.getLogger(__name__)
 
+_POLYGON_SECTOR_ETFS: dict[str, str] = {
+    "Technology": "XLK",
+    "Healthcare": "XLV",
+    "Financials": "XLF",
+    "Consumer Discretionary": "XLY",
+    "Consumer Staples": "XLP",
+    "Energy": "XLE",
+    "Industrials": "XLI",
+    "Materials": "XLB",
+    "Real Estate": "XLRE",
+    "Utilities": "XLU",
+    "Communication Services": "XLC",
+}
+
 
 class PolygonProvider(AbstractDataProvider):
     """Market data via Polygon.io API."""
@@ -125,6 +139,73 @@ class PolygonProvider(AbstractDataProvider):
                 results.append(_build_news_entry(item, pub_dt))
         return results
 
+    async def get_earnings_calendar(
+        self, symbol: str, lookahead_days: int = 90
+    ) -> list[dict]:
+        """Fetch upcoming earnings via Polygon earnings calendar API."""
+        cutoff = datetime.now(UTC) + timedelta(days=lookahead_days)
+        earnings = await asyncio.to_thread(
+            self._client.get_earnings_calendar, symbol=symbol.upper()
+        )
+        if not earnings:
+            return []
+        results = []
+        for item in earnings:
+            date_str = getattr(item, "report_date", None) or getattr(item, "calendar_date", None)
+            if not date_str:
+                continue
+            try:
+                dt = datetime.fromisoformat(str(date_str)).replace(tzinfo=UTC)
+            except ValueError:
+                continue
+            if dt > cutoff:
+                continue
+            results.append(
+                {
+                    "symbol": symbol.upper(),
+                    "date": dt.isoformat(),
+                    "eps_estimate": getattr(item, "estimated_eps", None),
+                    "eps_actual": getattr(item, "reported_eps", None),
+                    "quarter": getattr(item, "fiscal_period", ""),
+                }
+            )
+        return results
+
+    async def get_sector_performance(self) -> dict:
+        """Compute sector performance from Sector SPDR ETFs via Polygon."""
+        results: dict[str, dict] = {}
+        for sector_name, etf_symbol in _POLYGON_SECTOR_ETFS.items():
+            hist = await _fetch_sector_etf_history(self._client, etf_symbol)
+            if hist is None or hist.empty:
+                continue
+            close = hist["Close"]
+            if len(close) < 5:
+                continue
+            results[sector_name] = {
+                "etf": etf_symbol,
+                "price": round(float(close.iloc[-1]), 4),
+                "performance_1d": round(_pct(close, 1), 4),
+                "performance_1w": round(_pct(close, 5), 4),
+                "performance_1m": round(_pct(close, 21), 4),
+                "performance_3m": round(_pct(close, 63), 4),
+                "performance_ytd": round(_ytd(close), 4),
+                "best_stock": None,
+            }
+        return results
+
+    async def get_economic_indicators(self) -> dict:
+        """Polygon does not support economic indicators."""
+        logger.warning("economic_indicators not available via Polygon")
+        return {
+            "vix": None,
+            "10y_yield": None,
+            "2y_yield": None,
+            "sp500_pe": None,
+            "gdp_growth": None,
+            "cpi": None,
+            "unemployment_rate": None,
+        }
+
 
 def _period_to_start(end_date: Any, period: str) -> Any:
     """Convert a period string to a start date."""
@@ -199,3 +280,49 @@ def _build_news_entry(item: Any, pub_dt: datetime | None) -> dict:
         "published_at": pub_dt.isoformat() if pub_dt is not None else "",
         "sentiment": "neutral",
     }
+
+
+async def _fetch_sector_etf_history(
+    client: RESTClient, symbol: str
+) -> pd.DataFrame | None:
+    """Fetch 1 year of daily OHLCV for a sector ETF."""
+    end = datetime.now(UTC).date()
+    start = end - timedelta(days=365)
+    try:
+        aggs = await asyncio.to_thread(
+            client.get_aggs, symbol, 1, "day", start, end, limit=500
+        )
+    except Exception:
+        logger.warning("Failed to fetch ETF history for %s", symbol)
+        return None
+    if not aggs:
+        return None
+    records = [
+        {
+            "Date": datetime.fromtimestamp(a.timestamp / 1000, tz=UTC),
+            "Open": a.open,
+            "High": a.high,
+            "Low": a.low,
+            "Close": a.close,
+            "Volume": a.volume,
+        }
+        for a in aggs
+    ]
+    return pd.DataFrame(records).set_index("Date").sort_index()
+
+
+def _pct(series: pd.Series, periods: int) -> float:
+    """Percentage change over N periods."""
+    if len(series) <= periods:
+        return 0.0
+    return float(series.iloc[-1] / series.iloc[-(periods + 1)] - 1)
+
+
+def _ytd(series: pd.Series) -> float:
+    """Year-to-date return."""
+    now = datetime.now(UTC)
+    ytd_start = datetime(now.year, 1, 1, tzinfo=UTC)
+    ytd_data = series[series.index >= ytd_start]
+    if len(ytd_data) < 2:
+        return 0.0
+    return float(ytd_data.iloc[-1] / ytd_data.iloc[0] - 1)
