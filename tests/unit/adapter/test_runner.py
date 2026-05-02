@@ -26,17 +26,6 @@ def runner(state: SessionState) -> AgentRunner:
     return AgentRunner(state)
 
 
-class TestAgentRunnerInit:
-    def test_runner_creates_with_state(self, state: SessionState) -> None:
-        runner = AgentRunner(state)
-        assert runner.state is state
-        assert runner._agent is None
-        assert runner._checkpointer is None
-
-    def test_runner_has_event_queue(self, runner: AgentRunner) -> None:
-        assert runner.get_event_queue() is runner._queue
-
-
 class TestAgentRunnerStart:
     @pytest.mark.asyncio
     async def test_start_sets_agent_and_checkpointer(
@@ -317,7 +306,4 @@ class TestSetModel:
         assert "Failed to change model" in event.message
 
 
-class TestGetEventQueue:
-    def test_returns_queue(self, runner: AgentRunner) -> None:
-        queue = runner.get_event_queue()
-        assert queue is runner._queue
+

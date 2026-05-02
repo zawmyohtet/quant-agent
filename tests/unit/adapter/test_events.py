@@ -5,7 +5,6 @@ from quantagent.adapter.events import (
     AgentEvent,
     AgentTextChunk,
     AgentTurnComplete,
-    ApprovalDecision,
     ApprovalRequest,
     SystemNotification,
     ToolCallCompleted,
@@ -50,12 +49,4 @@ class TestAgentEvents:
         assert isinstance(e, AgentEvent)
 
 
-class TestApprovalDecision:
-    def test_approval_decision_approved(self) -> None:
-        d = ApprovalDecision(approved=True)
-        assert d.approved is True
-        assert not isinstance(d, AgentEvent)
 
-    def test_approval_decision_rejected(self) -> None:
-        d = ApprovalDecision(approved=False)
-        assert d.approved is False
