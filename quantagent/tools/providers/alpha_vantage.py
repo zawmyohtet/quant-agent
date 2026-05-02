@@ -8,6 +8,7 @@ from datetime import UTC, datetime, timedelta
 import pandas as pd
 from alpha_vantage.alphaintelligence import AlphaIntelligence  # type: ignore[import-untyped]
 from alpha_vantage.fundamentaldata import FundamentalData  # type: ignore[import-untyped]
+from alpha_vantage.sectorperformance import SectorPerformances  # type: ignore[import-untyped]
 from alpha_vantage.timeseries import TimeSeries  # type: ignore[import-untyped]
 
 from quantagent.tools.providers.base import AbstractDataProvider
@@ -25,6 +26,7 @@ class AlphaVantageProvider(AbstractDataProvider):
         self._ts = TimeSeries(key=api_key, output_format="pandas")
         self._fd = FundamentalData(key=api_key, output_format="pandas")
         self._ai = AlphaIntelligence(key=api_key)
+        self._sp = SectorPerformances(key=api_key, output_format="pandas")
 
     async def get_ohlcv(
         self, symbol: str, period: str = "1y", interval: str = "1d"
@@ -135,6 +137,120 @@ class AlphaVantageProvider(AbstractDataProvider):
                 }
             )
         return results
+
+
+    async def get_earnings_calendar(
+        self, symbol: str, lookahead_days: int = 90
+    ) -> list[dict]:
+        """Fetch upcoming earnings dates via Alpha Vantage."""
+        data, _ = await asyncio.to_thread(
+            self._ai.get_earnings, symbol=symbol.upper()
+        )
+        if not isinstance(data, dict) or "earnings" not in data:
+            return []
+        cutoff = datetime.now(UTC) + timedelta(days=lookahead_days)
+        results = []
+        for item in data["earnings"]:
+            date_str = item.get("date")
+            if not date_str:
+                continue
+            try:
+                dt = datetime.strptime(date_str, "%Y-%m-%d").replace(tzinfo=UTC)
+            except ValueError:
+                continue
+            if dt > cutoff:
+                continue
+            results.append(
+                {
+                    "symbol": symbol.upper(),
+                    "date": dt.isoformat(),
+                    "eps_estimate": _av_float(item, "estimatedEPS"),
+                    "eps_actual": _av_float(item, "reportedEPS"),
+                    "quarter": item.get("fiscalDateEnding", ""),
+                }
+            )
+        return results
+
+    async def get_sector_performance(self) -> dict:
+        """Fetch sector performance via Alpha Vantage SectorPerformances API."""
+        data, _ = await asyncio.to_thread(self._sp.get_sector)
+        if not isinstance(data, dict):
+            return {}
+        rank_meta = data.get("rank_a", {})
+        results: dict[str, dict] = {}
+        for key in [
+            "Energy", "Materials", "Industrials", "Consumer Discretionary",
+            "Consumer Staples", "Healthcare", "Financials", "Technology",
+            "Communication Services", "Utilities", "Real Estate",
+        ]:
+            perf_data = data.get(key)
+            if not isinstance(perf_data, dict):
+                continue
+            results[key] = {
+                "performance_1d": _av_pct_val(perf_data.get("1D")),
+                "performance_1w": _av_pct_val(perf_data.get("5D")),
+                "performance_1m": _av_pct_val(perf_data.get("1M")),
+                "performance_3m": _av_pct_val(perf_data.get("3M")),
+                "performance_ytd": _av_pct_val(perf_data.get("YTD")),
+                "rank": _av_int(rank_meta, key),
+                "best_stock": None,
+            }
+        return results
+
+    async def get_economic_indicators(self) -> dict:
+        """Fetch economic indicators via Alpha Vantage."""
+        indicators: dict[str, float | None] = {
+            "vix": None,
+            "10y_yield": None,
+            "2y_yield": None,
+            "sp500_pe": None,
+            "gdp_growth": None,
+            "cpi": None,
+            "unemployment_rate": None,
+        }
+        ten_y = await _fetch_treasury_yield(self._ts, "10year")
+        two_y = await _fetch_treasury_yield(self._ts, "2year")
+        indicators["10y_yield"] = ten_y
+        indicators["2y_yield"] = two_y
+        indicators["gdp_growth"] = await _fetch_economic_indicator(self._ts, "real_gdp")
+        indicators["cpi"] = await _fetch_economic_indicator(self._ts, "cpi")
+        indicators["unemployment_rate"] = await _fetch_economic_indicator(
+            self._ts, "unemployment"
+        )
+        logger.warning("vix and sp500_pe not available via Alpha Vantage")
+        return indicators
+
+
+def _av_pct_val(val: str | None) -> float | None:
+    """Convert Alpha Vantage percentage string (e.g. '1.23%') to float."""
+    if val is None:
+        return None
+    try:
+        return round(float(val.replace("%", "")) / 100, 4)
+    except (ValueError, TypeError, AttributeError):
+        return None
+
+
+async def _fetch_treasury_yield(ts: TimeSeries, maturity: str) -> float | None:
+    """Fetch latest treasury yield for a given maturity."""
+    data, _ = await asyncio.to_thread(
+        ts.get_treasury_yield, interval="monthly", maturity=maturity
+    )
+    if not isinstance(data, pd.DataFrame) or data.empty:
+        return None
+    return round(float(data.iloc[-1]["value"]), 4)
+
+
+async def _fetch_economic_indicator(ts: TimeSeries, name: str) -> float | None:
+    """Fetch latest value for an economic indicator."""
+    try:
+        data, _ = await asyncio.to_thread(ts.get_economic_indicator, name=name)
+        if not isinstance(data, pd.DataFrame) or data.empty:
+            return None
+        return round(float(data.iloc[-1][name]), 4)
+    except Exception:
+        logger.warning("Failed to fetch economic indicator: %s", name)
+        return None
 
 
 def _filter_by_period(df: pd.DataFrame, period: str) -> pd.DataFrame:
