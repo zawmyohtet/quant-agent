@@ -16,10 +16,13 @@ from quantagent.tools.fundamental import (
     score_piotroski_f,
 )
 from quantagent.tools.market_data import (
+    get_earnings_calendar,
+    get_economic_indicators,
     get_fundamentals,
     get_news,
     get_ohlcv,
     get_quote,
+    get_sector_performance,
     search_symbols,
 )
 from quantagent.tools.portfolio import (
@@ -338,6 +341,39 @@ async def _compare_peers(provider: Any, symbols: str) -> str:
     return df.to_json(orient="index", indent=2)
 
 
+async def _get_earnings_calendar(
+    provider: Any, symbol: str, lookahead_days: int = 90
+) -> str:
+    """Fetch upcoming earnings dates for a symbol.
+
+    Args:
+        symbol: Stock ticker symbol.
+        lookahead_days: Days ahead to search (default 90).
+    """
+    result = await get_earnings_calendar(provider, symbol, lookahead_days=lookahead_days)
+    return _json_dumps(result)
+
+
+async def _get_sector_performance(provider: Any) -> str:
+    """Fetch performance across all major market sectors.
+
+    Returns 1D, 1W, 1M, 3M, and YTD returns for each sector.
+    """
+    result = await get_sector_performance(provider)
+    return _json_dumps(result)
+
+
+async def _get_economic_indicators(provider: Any) -> str:
+    """Fetch macroeconomic indicators.
+
+    Returns VIX, treasury yields (2Y, 10Y), S&P 500 PE, GDP growth,
+    CPI, and unemployment rate. Fields unavailable from the provider
+    are returned as null.
+    """
+    result = await get_economic_indicators(provider)
+    return _json_dumps(result)
+
+
 # ── Registry builder ─────────────────────────────────────────────────────────
 
 
@@ -359,6 +395,9 @@ def build_tool_registry(config: QuantAgentConfig) -> list[Any]:
         _bind_provider(_compute_portfolio_risk, provider),
         _bind_provider(_run_monte_carlo, provider),
         _bind_provider(_compare_peers, provider),
+        _bind_provider(_get_earnings_calendar, provider),
+        _bind_provider(_get_sector_performance, provider),
+        _bind_provider(_get_economic_indicators, provider),
         compute_dcf_valuation,
         compute_piotroski_score,
         compute_altman_z,
