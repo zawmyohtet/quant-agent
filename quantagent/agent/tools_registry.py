@@ -56,11 +56,6 @@ def _json_dumps(obj: Any) -> str:
     return json.dumps(obj, indent=2, default=str)
 
 
-def _tool_error(tool_name: str, detail: str) -> str:
-    """Format a standard error message for tool failures."""
-    return f"Error in {tool_name}: {detail}"
-
-
 def _bind_provider(func: Any, provider: Any) -> Any:
     """Wrap a ``(provider, ...)`` function into a @tool with provider injected.
 
@@ -87,6 +82,9 @@ def _bind_provider(func: Any, provider: Any) -> Any:
 
 
 # ── Provider-independent tools (decorated at module level) ───────────────────
+# Error handling is delegated to ErrorLoggingMiddleware which wraps every
+# tool call via wrap_tool_call — logs full tracebacks then returns error
+# strings to the LLM.
 
 
 @tool
@@ -106,14 +104,11 @@ async def compute_dcf_valuation(
         terminal_growth: Perpetual growth rate (decimal, e.g. 0.02).
         shares_outstanding: Shares outstanding in millions.
     """
-    try:
-        fcf_list = [float(x) for x in free_cash_flows.split(",")]
-        result = compute_dcf(
-            fcf_list, growth_rate, discount_rate, terminal_growth, shares_outstanding,
-        )
-        return _json_dumps(result)
-    except Exception as exc:
-        return _tool_error("compute_dcf_valuation", str(exc))
+    fcf_list = [float(x) for x in free_cash_flows.split(",")]
+    result = compute_dcf(
+        fcf_list, growth_rate, discount_rate, terminal_growth, shares_outstanding,
+    )
+    return _json_dumps(result)
 
 
 @tool
@@ -123,12 +118,9 @@ async def compute_piotroski_score(fundamentals_json: str) -> str:
     Args:
         fundamentals_json: JSON string of fundamental data fields.
     """
-    try:
-        data = json.loads(fundamentals_json)
-        result = score_piotroski_f(data)
-        return _json_dumps(result)
-    except Exception as exc:
-        return _tool_error("compute_piotroski_score", str(exc))
+    data = json.loads(fundamentals_json)
+    result = score_piotroski_f(data)
+    return _json_dumps(result)
 
 
 @tool
@@ -138,15 +130,13 @@ async def compute_altman_z(fundamentals_json: str) -> str:
     Args:
         fundamentals_json: JSON string of fundamental data fields.
     """
-    try:
-        data = json.loads(fundamentals_json)
-        result = score_altman_z(data)
-        return _json_dumps(result)
-    except Exception as exc:
-        return _tool_error("compute_altman_z", str(exc))
+    data = json.loads(fundamentals_json)
+    result = score_altman_z(data)
+    return _json_dumps(result)
 
 
 # ── Provider-dependent tool implementations (bare, bound at runtime) ─────────
+# Error handling is delegated to ErrorLoggingMiddleware (wrap_tool_call).
 
 
 async def _get_stock_quote(provider: Any, symbol: str) -> str:
@@ -155,11 +145,8 @@ async def _get_stock_quote(provider: Any, symbol: str) -> str:
     Args:
         symbol: Stock ticker symbol (e.g. AAPL, MSFT).
     """
-    try:
-        result = await get_quote(provider, symbol)
-        return _json_dumps(result)
-    except Exception as exc:
-        return _tool_error("get_stock_quote", str(exc))
+    result = await get_quote(provider, symbol)
+    return _json_dumps(result)
 
 
 async def _get_ohlcv_data(
@@ -172,20 +159,17 @@ async def _get_ohlcv_data(
         period: Time period — 1d, 5d, 1mo, 3mo, 6mo, 1y, 2y, 5y, 10y.
         interval: Bar interval — 1m, 5m, 15m, 30m, 60m, 1d, 1wk, 1mo.
     """
-    try:
-        df = await get_ohlcv(provider, symbol, period=period, interval=interval)
-        summary = {
-            "symbol": symbol,
-            "period": period,
-            "interval": interval,
-            "bars": len(df),
-            "latest_close": round(float(df["Close"].iloc[-1]), 4),
-            "latest_volume": int(df["Volume"].iloc[-1]),
-            "date_range": [df.index[0].isoformat(), df.index[-1].isoformat()],
-        }
-        return _json_dumps(summary)
-    except Exception as exc:
-        return _tool_error("get_ohlcv_data", str(exc))
+    df = await get_ohlcv(provider, symbol, period=period, interval=interval)
+    summary = {
+        "symbol": symbol,
+        "period": period,
+        "interval": interval,
+        "bars": len(df),
+        "latest_close": round(float(df["Close"].iloc[-1]), 4),
+        "latest_volume": int(df["Volume"].iloc[-1]),
+        "date_range": [df.index[0].isoformat(), df.index[-1].isoformat()],
+    }
+    return _json_dumps(summary)
 
 
 async def _get_stock_fundamentals(provider: Any, symbol: str) -> str:
@@ -194,11 +178,8 @@ async def _get_stock_fundamentals(provider: Any, symbol: str) -> str:
     Args:
         symbol: Stock ticker symbol.
     """
-    try:
-        result = await get_fundamentals(provider, symbol)
-        return _json_dumps(result)
-    except Exception as exc:
-        return _tool_error("get_stock_fundamentals", str(exc))
+    result = await get_fundamentals(provider, symbol)
+    return _json_dumps(result)
 
 
 async def _get_stock_news(provider: Any, symbol: str, days: int = 7) -> str:
@@ -208,11 +189,8 @@ async def _get_stock_news(provider: Any, symbol: str, days: int = 7) -> str:
         symbol: Stock ticker symbol.
         days: Number of days to look back.
     """
-    try:
-        result = await get_news(provider, symbol, days=days)
-        return _json_dumps(result)
-    except Exception as exc:
-        return _tool_error("get_stock_news", str(exc))
+    result = await get_news(provider, symbol, days=days)
+    return _json_dumps(result)
 
 
 async def _search_stock_symbols(provider: Any, query: str) -> str:
@@ -221,11 +199,8 @@ async def _search_stock_symbols(provider: Any, query: str) -> str:
     Args:
         query: Company name or partial ticker to search for.
     """
-    try:
-        result = await search_symbols(provider, query)
-        return _json_dumps(result)
-    except Exception as exc:
-        return _tool_error("search_stock_symbols", str(exc))
+    result = await search_symbols(provider, query)
+    return _json_dumps(result)
 
 
 async def _compute_technical_indicators(provider: Any, symbol: str, indicators: str) -> str:
@@ -237,15 +212,12 @@ async def _compute_technical_indicators(provider: Any, symbol: str, indicators: 
             sma_20, ema_50, rsi_14, macd, bbands, atr_14, adx_14, obv,
             stoch_k, stoch_d, vwap, supertrend.
     """
-    try:
-        df = await get_ohlcv(provider, symbol, period="1y")
-        indicator_list = [i.strip() for i in indicators.split(",")]
-        result_df = compute_indicators(df, indicator_list)
-        cols = [c for c in result_df.columns if c not in {"Open", "High", "Low", "Close", "Volume"}]
-        latest = result_df.iloc[-1][["Close"] + cols]
-        return _json_dumps({"symbol": symbol, "latest": latest.round(4).to_dict()})
-    except Exception as exc:
-        return _tool_error("compute_technical_indicators", str(exc))
+    df = await get_ohlcv(provider, symbol, period="1y")
+    indicator_list = [i.strip() for i in indicators.split(",")]
+    result_df = compute_indicators(df, indicator_list)
+    cols = [c for c in result_df.columns if c not in {"Open", "High", "Low", "Close", "Volume"}]
+    latest = result_df.iloc[-1][["Close"] + cols]
+    return _json_dumps({"symbol": symbol, "latest": latest.round(4).to_dict()})
 
 
 async def _detect_chart_patterns(provider: Any, symbol: str) -> str:
@@ -254,12 +226,9 @@ async def _detect_chart_patterns(provider: Any, symbol: str) -> str:
     Args:
         symbol: Stock ticker symbol.
     """
-    try:
-        df = await get_ohlcv(provider, symbol, period="3mo")
-        patterns = detect_patterns(df)
-        return _json_dumps({"symbol": symbol, "patterns": patterns[:10]})
-    except Exception as exc:
-        return _tool_error("detect_chart_patterns", str(exc))
+    df = await get_ohlcv(provider, symbol, period="3mo")
+    patterns = detect_patterns(df)
+    return _json_dumps({"symbol": symbol, "patterns": patterns[:10]})
 
 
 async def _get_support_resistance(provider: Any, symbol: str) -> str:
@@ -268,12 +237,9 @@ async def _get_support_resistance(provider: Any, symbol: str) -> str:
     Args:
         symbol: Stock ticker symbol.
     """
-    try:
-        df = await get_ohlcv(provider, symbol, period="6mo")
-        levels = detect_support_resistance(df)
-        return _json_dumps(levels)
-    except Exception as exc:
-        return _tool_error("get_support_resistance", str(exc))
+    df = await get_ohlcv(provider, symbol, period="6mo")
+    levels = detect_support_resistance(df)
+    return _json_dumps(levels)
 
 
 async def _run_backtest_tool(
@@ -287,12 +253,9 @@ async def _run_backtest_tool(
             rsi_mean_reversion, macd_momentum, bollinger_breakout, buy_and_hold.
         period: Backtest period — 1y, 2y, 5y, 10y.
     """
-    try:
-        config = BacktestConfig(symbol=symbol.upper(), strategy=strategy, period=period)
-        result = await run_backtest(provider, config)
-        return format_backtest_result(result)
-    except Exception as exc:
-        return _tool_error("run_backtest_tool", str(exc))
+    config = BacktestConfig(symbol=symbol.upper(), strategy=strategy, period=period)
+    result = await run_backtest(provider, config)
+    return format_backtest_result(result)
 
 
 async def _screen_stocks_tool(
@@ -310,16 +273,13 @@ async def _screen_stocks_tool(
         sort_by: Field to sort by.
         limit: Maximum results to return.
     """
-    try:
-        crit = json.loads(criteria) if criteria else {}
-        df = await screen_stocks(
-            provider, universe=universe, criteria=crit, sort_by=sort_by, limit=limit,
-        )
-        if df.empty:
-            return "No stocks matched the criteria."
-        return df.to_json(orient="records", indent=2)
-    except Exception as exc:
-        return _tool_error("screen_stocks_tool", str(exc))
+    crit = json.loads(criteria) if criteria else {}
+    df = await screen_stocks(
+        provider, universe=universe, criteria=crit, sort_by=sort_by, limit=limit,
+    )
+    if df.empty:
+        return "No stocks matched the criteria."
+    return df.to_json(orient="records", indent=2)
 
 
 async def _optimize_portfolio_tool(
@@ -331,12 +291,9 @@ async def _optimize_portfolio_tool(
         symbols: Comma-separated list of stock symbols.
         method: Optimization method — max_sharpe, min_vol, risk_parity, equal_weight.
     """
-    try:
-        sym_list = _parse_comma_symbols(symbols)
-        result = await optimize_portfolio(provider, sym_list, method=method)
-        return _json_dumps(result)
-    except Exception as exc:
-        return _tool_error("optimize_portfolio_tool", str(exc))
+    sym_list = _parse_comma_symbols(symbols)
+    result = await optimize_portfolio(provider, sym_list, method=method)
+    return _json_dumps(result)
 
 
 async def _compute_portfolio_risk(provider: Any, symbols: str, weights: str) -> str:
@@ -346,14 +303,11 @@ async def _compute_portfolio_risk(provider: Any, symbols: str, weights: str) -> 
         symbols: Comma-separated list of stock symbols.
         weights: Comma-separated list of weights (must sum to ~1.0).
     """
-    try:
-        sym_list = _parse_comma_symbols(symbols)
-        w_list = _parse_comma_weights(weights)
-        weight_dict = dict(zip(sym_list, w_list, strict=False))
-        result = await compute_portfolio_metrics(provider, weight_dict)
-        return _json_dumps(result)
-    except Exception as exc:
-        return _tool_error("compute_portfolio_risk", str(exc))
+    sym_list = _parse_comma_symbols(symbols)
+    w_list = _parse_comma_weights(weights)
+    weight_dict = dict(zip(sym_list, w_list, strict=False))
+    result = await compute_portfolio_metrics(provider, weight_dict)
+    return _json_dumps(result)
 
 
 async def _run_monte_carlo(provider: Any, symbols: str, weights: str) -> str:
@@ -363,14 +317,11 @@ async def _run_monte_carlo(provider: Any, symbols: str, weights: str) -> str:
         symbols: Comma-separated list of stock symbols.
         weights: Comma-separated list of weights.
     """
-    try:
-        sym_list = _parse_comma_symbols(symbols)
-        w_list = _parse_comma_weights(weights)
-        weight_dict = dict(zip(sym_list, w_list, strict=False))
-        result = await monte_carlo_simulation(provider, weight_dict)
-        return _json_dumps(result)
-    except Exception as exc:
-        return _tool_error("run_monte_carlo", str(exc))
+    sym_list = _parse_comma_symbols(symbols)
+    w_list = _parse_comma_weights(weights)
+    weight_dict = dict(zip(sym_list, w_list, strict=False))
+    result = await monte_carlo_simulation(provider, weight_dict)
+    return _json_dumps(result)
 
 
 async def _compare_peers(provider: Any, symbols: str) -> str:
@@ -379,15 +330,12 @@ async def _compare_peers(provider: Any, symbols: str) -> str:
     Args:
         symbols: Comma-separated list of stock symbols.
     """
-    try:
-        sym_list = _parse_comma_symbols(symbols)
-        fund_map = {}
-        for sym in sym_list:
-            fund_map[sym] = await get_fundamentals(provider, sym)
-        df = peer_comparison(fund_map)
-        return df.to_json(orient="index", indent=2)
-    except Exception as exc:
-        return _tool_error("compare_peers", str(exc))
+    sym_list = _parse_comma_symbols(symbols)
+    fund_map = {}
+    for sym in sym_list:
+        fund_map[sym] = await get_fundamentals(provider, sym)
+    df = peer_comparison(fund_map)
+    return df.to_json(orient="index", indent=2)
 
 
 # ── Registry builder ─────────────────────────────────────────────────────────
