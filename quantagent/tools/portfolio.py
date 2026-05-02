@@ -145,9 +145,8 @@ async def monte_carlo_simulation(
     cov_matrix = returns.cov()
     w = np.array([weights.get(s, 0.0) for s in symbols])
 
-    # Simulate
-    np.random.seed(42)
-    simulated = np.random.multivariate_normal(mean_returns, cov_matrix, (n_simulations, horizon_days))
+    rng = np.random.default_rng(42)
+    simulated = rng.multivariate_normal(mean_returns, cov_matrix, size=(n_simulations, horizon_days))
     port_simulated = np.dot(simulated, w)
     cumulative = np.cumprod(1 + port_simulated, axis=1)
     final_values = cumulative[:, -1]

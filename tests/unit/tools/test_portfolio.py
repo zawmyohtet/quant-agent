@@ -5,7 +5,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from quantagent.tools.portfolio import optimize_portfolio
+from quantagent.tools.portfolio import monte_carlo_simulation, optimize_portfolio
 from quantagent.tools.providers.base import AbstractDataProvider
 
 
@@ -56,12 +56,12 @@ class MockProvider(AbstractDataProvider):
 
 
 @pytest.fixture
-def mock_provider():
+def mock_provider() -> MockProvider:
     return MockProvider()
 
 
 @pytest.mark.asyncio
-async def test_optimize_portfolio_equal_weight(mock_provider: MockProvider):
+async def test_optimize_portfolio_equal_weight(mock_provider: MockProvider) -> None:
     result = await optimize_portfolio(
         mock_provider, ["A", "B", "C"], method="equal_weight"
     )
@@ -71,7 +71,7 @@ async def test_optimize_portfolio_equal_weight(mock_provider: MockProvider):
 
 
 @pytest.mark.asyncio
-async def test_optimize_portfolio_max_sharpe(mock_provider: MockProvider):
+async def test_optimize_portfolio_max_sharpe(mock_provider: MockProvider) -> None:
     result = await optimize_portfolio(
         mock_provider, ["A", "B"], method="max_sharpe"
     )
@@ -82,7 +82,7 @@ async def test_optimize_portfolio_max_sharpe(mock_provider: MockProvider):
 
 
 @pytest.mark.asyncio
-async def test_optimize_portfolio_min_vol(mock_provider: MockProvider):
+async def test_optimize_portfolio_min_vol(mock_provider: MockProvider) -> None:
     result = await optimize_portfolio(
         mock_provider, ["A", "B"], method="min_vol"
     )
@@ -91,9 +91,25 @@ async def test_optimize_portfolio_min_vol(mock_provider: MockProvider):
 
 
 @pytest.mark.asyncio
-async def test_optimize_portfolio_risk_parity(mock_provider: MockProvider):
+async def test_optimize_portfolio_risk_parity(mock_provider: MockProvider) -> None:
     result = await optimize_portfolio(
         mock_provider, ["A", "B", "C"], method="risk_parity"
     )
     assert "weights" in result
     assert sum(result["weights"].values()) == pytest.approx(1.0, abs=0.01)
+
+
+@pytest.mark.asyncio
+async def test_monte_carlo_simulation(mock_provider: MockProvider) -> None:
+    result = await monte_carlo_simulation(
+        mock_provider, {"A": 0.5, "B": 0.5}, horizon_days=30, n_simulations=100
+    )
+    assert "p5" in result
+    assert "p25" in result
+    assert "p50" in result
+    assert "p75" in result
+    assert "p95" in result
+    assert "prob_loss" in result
+    assert "expected_value" in result
+    assert 0 <= result["prob_loss"] <= 1
+    assert result["p5"] <= result["p25"] <= result["p50"] <= result["p75"] <= result["p95"]
