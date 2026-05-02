@@ -74,10 +74,10 @@ class QuantAgentApp(App):
         self._event_consumer: asyncio.Task | None = None
 
     def compose(self) -> ComposeResult:
-        yield MessageView(id=_ID_MESSAGES)
-        yield StatusBar(self.state, id=_ID_STATUS_BAR)
-        yield ChatInput(id=_ID_CHAT_INPUT)
-        yield ChatFooter(self.state, id=_ID_CHAT_FOOTER)
+        yield MessageView(id="messages")
+        yield StatusBar(self.state, id="status-bar")
+        yield ChatInput(id="chat-input")
+        yield ChatFooter(self.state, id="chat-footer")
 
     async def on_mount(self) -> None:
         self.runner = AgentRunner(self.state)
