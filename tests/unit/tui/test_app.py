@@ -12,10 +12,10 @@ from quantagent.adapter.events import (
     ToolCallStarted,
 )
 from quantagent.tui.app import (
-    QuantAgentApp,
     _ID_CHAT_FOOTER,
     _ID_MESSAGES,
     _ID_STATUS_BAR,
+    QuantAgentApp,
 )
 from quantagent.tui.config import QuantAgentConfig
 
