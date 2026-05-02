@@ -120,14 +120,7 @@ async def _handle_retry(args: list[str], app: QuantAgentApp) -> None:
     messages = app.query_one("#messages", MessageView)
     last_user = messages.last_user_message()
     if last_user:
-        messages.add_user_message(last_user)
-        app.state.is_running = True
-        _refresh_status(app)
-        footer = app.query_one("#chat-footer", ChatFooter)
-        if hasattr(footer, "refresh_state"):
-            footer.refresh_state()
-        if hasattr(app, "runner") and app.runner:
-            app.run_worker(app.runner.run_turn(last_user), exclusive=True)
+        await app._submit_user_message(last_user)
     else:
         _system(app, "No previous user message to retry.")
 
@@ -151,7 +144,7 @@ async def _handle_analyze(args: list[str], app: QuantAgentApp) -> None:
         _system(app, "Usage: /analyze <SYMBOL>")
         return
     symbol = args[0].upper()
-    await _submit_user_message(app, f"Perform a full analysis of {symbol}")
+    await app._submit_user_message(f"Perform a full analysis of {symbol}")
 
 
 async def _handle_backtest(args: list[str], app: QuantAgentApp) -> None:
@@ -159,7 +152,7 @@ async def _handle_backtest(args: list[str], app: QuantAgentApp) -> None:
         _system(app, "Usage: /backtest <SYMBOL> <strategy>")
         return
     symbol, strategy = args[0].upper(), args[1]
-    await _submit_user_message(app, f"Run a backtest for {symbol} using {strategy} strategy")
+    await app._submit_user_message(f"Run a backtest for {symbol} using {strategy} strategy")
 
 
 async def _handle_screen(args: list[str], app: QuantAgentApp) -> None:
@@ -167,7 +160,7 @@ async def _handle_screen(args: list[str], app: QuantAgentApp) -> None:
         _system(app, "Usage: /screen <criteria>")
         return
     criteria = " ".join(args)
-    await _submit_user_message(app, f"Screen stocks where {criteria}")
+    await app._submit_user_message(f"Screen stocks where {criteria}")
 
 
 async def _handle_compare(args: list[str], app: QuantAgentApp) -> None:
@@ -175,7 +168,7 @@ async def _handle_compare(args: list[str], app: QuantAgentApp) -> None:
         _system(app, "Usage: /compare <SYM1> <SYM2> ...")
         return
     symbols = " ".join(s.upper() for s in args)
-    await _submit_user_message(app, f"Compare {symbols}")
+    await app._submit_user_message(f"Compare {symbols}")
 
 
 async def _handle_help(args: list[str], app: QuantAgentApp) -> None:
@@ -202,18 +195,9 @@ def _system(app: QuantAgentApp, text: str) -> None:
 def _refresh_status(app: QuantAgentApp) -> None:
     status = app.query_one("#status-bar", StatusBar)
     status.refresh_state()
-
-
-async def _submit_user_message(app: QuantAgentApp, text: str) -> None:
-    messages = app.query_one("#messages", MessageView)
-    messages.add_user_message(text)
-    app.state.is_running = True
-    _refresh_status(app)
     footer = app.query_one("#chat-footer", ChatFooter)
     if hasattr(footer, "refresh_state"):
         footer.refresh_state()
-    if hasattr(app, "runner") and app.runner:
-        app.run_worker(app.runner.run_turn(text), exclusive=True)
 
 
 REGISTRY: list[SlashCommand] = [
