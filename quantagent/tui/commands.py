@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from quantagent.tui.config import _DEFAULT_CONFIG_DIR
+from quantagent.tui.widgets.chat_footer import ChatFooter
 from quantagent.tui.widgets.message_view import MessageView
 from quantagent.tui.widgets.status_bar import StatusBar
 
@@ -120,6 +121,11 @@ async def _handle_retry(args: list[str], app: QuantAgentApp) -> None:
     last_user = messages.last_user_message()
     if last_user:
         messages.add_user_message(last_user)
+        app.state.is_running = True
+        _refresh_status(app)
+        footer = app.query_one("#chat-footer", ChatFooter)
+        if hasattr(footer, "refresh_state"):
+            footer.refresh_state()
         if hasattr(app, "runner") and app.runner:
             app.run_worker(app.runner.run_turn(last_user), exclusive=True)
     else:
@@ -201,6 +207,11 @@ def _refresh_status(app: QuantAgentApp) -> None:
 async def _submit_user_message(app: QuantAgentApp, text: str) -> None:
     messages = app.query_one("#messages", MessageView)
     messages.add_user_message(text)
+    app.state.is_running = True
+    _refresh_status(app)
+    footer = app.query_one("#chat-footer", ChatFooter)
+    if hasattr(footer, "refresh_state"):
+        footer.refresh_state()
     if hasattr(app, "runner") and app.runner:
         app.run_worker(app.runner.run_turn(text), exclusive=True)
 
