@@ -11,7 +11,12 @@ from quantagent.adapter.events import (
     AgentTurnComplete,
     ToolCallStarted,
 )
-from quantagent.tui.app import QuantAgentApp
+from quantagent.tui.app import (
+    QuantAgentApp,
+    _ID_CHAT_FOOTER,
+    _ID_MESSAGES,
+    _ID_STATUS_BAR,
+)
 from quantagent.tui.config import QuantAgentConfig
 
 
@@ -36,9 +41,9 @@ class TestAppWiring:
                 app,
                 "query_one",
                 side_effect=lambda selector, _: {
-                    "#messages": mock_messages,
-                    "#status-bar": mock_status,
-                    "#chat-footer": mock_footer,
+                    _ID_MESSAGES: mock_messages,
+                    _ID_STATUS_BAR: mock_status,
+                    _ID_CHAT_FOOTER: mock_footer,
                 }[selector],
             ),
             patch.object(app, "run_worker") as mock_run_worker,
@@ -101,9 +106,9 @@ class TestAppWiring:
             app,
             "query_one",
             side_effect=lambda selector, _: {
-                "#messages": mock_messages,
-                "#status-bar": mock_status,
-                "#chat-footer": mock_footer,
+                _ID_MESSAGES: mock_messages,
+                _ID_STATUS_BAR: mock_status,
+                _ID_CHAT_FOOTER: mock_footer,
             }[selector],
         ):
             await app._handle_event(AgentTurnComplete())

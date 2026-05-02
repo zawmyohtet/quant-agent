@@ -31,6 +31,11 @@ from quantagent.tui.widgets.thread_selector import ThreadSelectorScreen
 
 logger = logging.getLogger(__name__)
 
+_ID_MESSAGES = "#messages"
+_ID_STATUS_BAR = "#status-bar"
+_ID_CHAT_INPUT = "#chat-input"
+_ID_CHAT_FOOTER = "#chat-footer"
+
 _WELCOME_BANNER = """
   ██████╗ ██╗   ██╗ █████╗ ███╗   ██╗████████╗ █████╗  ██████╗ ███████╗███╗   ██╗████████╗
  ██╔═══██╗██║   ██║██╔══██╗████╗  ██║╚══██╔══╝██╔══██╗██╔════╝ ██╔════╝████╗  ██║╚══██╔══╝
@@ -69,10 +74,10 @@ class QuantAgentApp(App):
         self._event_consumer: asyncio.Task | None = None
 
     def compose(self) -> ComposeResult:
-        yield MessageView(id="messages")
-        yield StatusBar(self.state, id="status-bar")
-        yield ChatInput(id="chat-input")
-        yield ChatFooter(self.state, id="chat-footer")
+        yield MessageView(id=_ID_MESSAGES)
+        yield StatusBar(self.state, id=_ID_STATUS_BAR)
+        yield ChatInput(id=_ID_CHAT_INPUT)
+        yield ChatFooter(self.state, id=_ID_CHAT_FOOTER)
 
     async def on_mount(self) -> None:
         self.runner = AgentRunner(self.state)
@@ -85,7 +90,7 @@ class QuantAgentApp(App):
             provider=self.state.config.provider,
             thread=self.state.thread_id[:8],
         )
-        messages = self.query_one("#messages", MessageView)
+        messages = self.query_one(_ID_MESSAGES, MessageView)
         messages.add_system_message(banner)
 
         await self.state.upsert_thread(
@@ -125,7 +130,7 @@ class QuantAgentApp(App):
 
     async def _handle_event(self, event: AgentEvent) -> None:
         """Dispatch an AgentEvent to the appropriate TUI update."""
-        messages = self.query_one("#messages", MessageView)
+        messages = self.query_one(_ID_MESSAGES, MessageView)
 
         if isinstance(event, AgentTextChunk):
             if messages._agent_buffer_id:
@@ -150,10 +155,10 @@ class QuantAgentApp(App):
         elif isinstance(event, AgentTurnComplete):
             self.state.is_running = False
             messages._agent_buffer_id = None
-            status = self.query_one("#status-bar", StatusBar)
+            status = self.query_one(_ID_STATUS_BAR, StatusBar)
             if hasattr(status, "refresh_state"):
                 status.refresh_state()
-            footer = self.query_one("#chat-footer", ChatFooter)
+            footer = self.query_one(_ID_CHAT_FOOTER, ChatFooter)
             if hasattr(footer, "refresh_state"):
                 footer.refresh_state()
 
@@ -173,7 +178,7 @@ class QuantAgentApp(App):
         self.runner.resolve_approval(approved)
 
         if not approved:
-            messages = self.query_one("#messages", MessageView)
+            messages = self.query_one(_ID_MESSAGES, MessageView)
             messages.add_system_message(f"Tool {event.tool_name} rejected by user.")
 
     async def on_chat_input_submitted(self, event: ChatInput.Submitted) -> None:
@@ -193,14 +198,14 @@ class QuantAgentApp(App):
     async def _submit_user_message(self, text: str) -> None:
         if self.state.is_running:
             return
-        messages = self.query_one("#messages", MessageView)
+        messages = self.query_one(_ID_MESSAGES, MessageView)
         messages._agent_buffer_id = None
         messages.add_user_message(text)
         self.state.is_running = True
-        status = self.query_one("#status-bar", StatusBar)
+        status = self.query_one(_ID_STATUS_BAR, StatusBar)
         if hasattr(status, "refresh_state"):
             status.refresh_state()
-        footer = self.query_one("#chat-footer", ChatFooter)
+        footer = self.query_one(_ID_CHAT_FOOTER, ChatFooter)
         if hasattr(footer, "refresh_state"):
             footer.refresh_state()
         if self.runner:
@@ -211,16 +216,16 @@ class QuantAgentApp(App):
 
     def action_new_thread(self) -> None:
         self.state.new_thread()
-        self.query_one("#messages", MessageView).clear()
-        self.query_one("#status-bar", StatusBar).refresh_state()
-        self.query_one("#chat-footer", ChatFooter).refresh_state()
-        self.query_one("#messages", MessageView).add_system_message("Started new thread.")
+        self.query_one(_ID_MESSAGES, MessageView).clear()
+        self.query_one(_ID_STATUS_BAR, StatusBar).refresh_state()
+        self.query_one(_ID_CHAT_FOOTER, ChatFooter).refresh_state()
+        self.query_one(_ID_MESSAGES, MessageView).add_system_message("Started new thread.")
 
     def action_clear_messages(self) -> None:
-        self.query_one("#messages", MessageView).clear()
+        self.query_one(_ID_MESSAGES, MessageView).clear()
 
     def action_cancel_agent(self) -> None:
-        messages = self.query_one("#messages", MessageView)
+        messages = self.query_one(_ID_MESSAGES, MessageView)
         if self.runner:
             self.runner.cancel()
         messages.add_system_message("Agent turn cancelled.")
