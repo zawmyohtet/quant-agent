@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import contextlib
+import logging
 
 import typer
 
 from quantagent.tui.app import QuantAgentApp
 from quantagent.tui.config import QuantAgentConfig, load_dotenv_file
+from quantagent.utils.logging import init_file_logging, install_excepthook
 
 app = typer.Typer()
 
@@ -25,6 +27,10 @@ def run(
         config.provider = provider
     if thread:
         config.thread_id = thread
+    init_file_logging()
+    install_excepthook()
+    logging.getLogger(__name__).info("File logging initialized at ~/.quantagent/logs/errors.log")
+
     with contextlib.suppress(KeyboardInterrupt):
         QuantAgentApp(config=config).run()
 
