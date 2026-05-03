@@ -5,7 +5,7 @@ import asyncio
 import inspect
 import json
 import logging
-from typing import Any, TypeVar
+from typing import Any
 
 from langchain.tools import tool
 
@@ -43,7 +43,6 @@ from quantagent.tui.config import QuantAgentConfig
 logger = logging.getLogger(__name__)
 
 _TOOL_TIMEOUT_SEC = 30
-T = TypeVar("T")
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -63,7 +62,7 @@ def _json_dumps(obj: Any) -> str:
     return json.dumps(obj, indent=2, default=str)
 
 
-async def _with_timeout(coro: asyncio.Future[T] | Any, timeout: float = _TOOL_TIMEOUT_SEC) -> T:
+async def _with_timeout(coro: Any, timeout: float = _TOOL_TIMEOUT_SEC) -> Any:
     """Wrap an awaitable with a timeout, raising TimeoutError on expiry."""
     return await asyncio.wait_for(coro, timeout=timeout)
 
@@ -291,7 +290,7 @@ async def _screen_stocks_tool(
     ))
     if df.empty:
         return "No stocks matched the criteria."
-    return df.to_json(orient="records", indent=2)
+    return str(df.to_json(orient="records", indent=2))
 
 
 async def _optimize_portfolio_tool(
