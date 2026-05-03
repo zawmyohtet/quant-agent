@@ -40,6 +40,7 @@ class ToolCallCompleted(AgentEvent):
 
     call_id: str
     result: str
+    is_error: bool = False
 
 
 @dataclass
