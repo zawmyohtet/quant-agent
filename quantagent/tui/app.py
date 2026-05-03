@@ -160,7 +160,7 @@ class QuantAgentApp(App):
             messages._agent_buffer_id = None
 
         elif isinstance(event, ToolCallCompleted):
-            messages.complete_tool_call(event.call_id, event.result)
+            messages.complete_tool_call(event.call_id, event.result, is_error=event.is_error)
 
         elif isinstance(event, AgentError):
             messages.add_error_message(event.message, retryable=event.retryable)

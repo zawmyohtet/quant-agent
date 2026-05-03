@@ -62,12 +62,15 @@ class MessageView(ScrollableContainer):
         )
         self._append_entry(entry)
 
-    def complete_tool_call(self, call_id: str, result: str) -> None:
+    def complete_tool_call(self, call_id: str, result: str, *, is_error: bool = False) -> None:
         entry = self._find_entry(call_id)
         if entry:
             entry.metadata["result"] = result
             entry.kind = "tool_done"
-            entry.content = f"✓ {entry.metadata['tool_name']} — done"
+            if is_error:
+                entry.content = f"[bold red]✗[/] {entry.metadata['tool_name']} — failed"
+            else:
+                entry.content = f"✓ {entry.metadata['tool_name']} — done"
             self._update_dom(entry)
 
     def add_system_message(self, text: str) -> None:
