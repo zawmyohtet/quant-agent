@@ -56,6 +56,11 @@ class ApprovalDialog(ModalScreen):
     def on_mount(self) -> None:
         self.query_one("#approve", Button).focus()
 
+    async def on_unmount(self) -> None:
+        """Reject pending approval if the dialog is torn down without a choice (e.g. app quit)."""
+        if not self.future.done():
+            self.future.set_result(False)
+
     def on_key(self, event: Key) -> None:
         if event.key in ("a", "A"):
             event.stop()

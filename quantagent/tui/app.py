@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from textual.app import App, ComposeResult
+from textual.worker import WorkerCancelled
 
 from quantagent.adapter.events import (
     AgentError,
@@ -30,6 +31,8 @@ from quantagent.tui.widgets.status_bar import StatusBar
 from quantagent.tui.widgets.thread_selector import ThreadSelectorScreen
 
 logger = logging.getLogger(__name__)
+
+_WORKERS_SHUTDOWN_TIMEOUT_SEC = 25.0
 
 _ID_MESSAGES = "#messages"
 _ID_STATUS_BAR = "#status-bar"
@@ -104,8 +107,21 @@ class QuantAgentApp(App):
     async def on_unmount(self) -> None:
         # Cancel any active agent workers first so network I/O tasks
         # receive cancellation and the event loop can close cleanly.
+        if self.runner:
+            self.runner.cancel()
         self.workers.cancel_all()
-        await self.workers.wait_for_complete()
+        try:
+            await asyncio.wait_for(
+                self.workers.wait_for_complete(),
+                timeout=_WORKERS_SHUTDOWN_TIMEOUT_SEC,
+            )
+        except TimeoutError:
+            logger.warning(
+                "Workers did not finish within %s s during shutdown; continuing cleanup.",
+                _WORKERS_SHUTDOWN_TIMEOUT_SEC,
+            )
+        except WorkerCancelled:
+            pass
 
         if self._event_consumer and not self._event_consumer.done():
             self._event_consumer.cancel()

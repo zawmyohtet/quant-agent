@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import re
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -136,3 +136,27 @@ class TestAppWiring:
             mock_messages.add_system_message.assert_called_once_with(
                 "Agent turn cancelled."
             )
+
+    @pytest.mark.asyncio
+    async def test_on_unmount_cancels_runner_before_workers(
+        self, app: QuantAgentApp
+    ) -> None:
+        mock_runner = MagicMock()
+        mock_runner.shutdown = AsyncMock()
+        app.runner = mock_runner
+        app._event_consumer = None
+        with (
+            patch.object(app.workers, "cancel_all") as mock_cancel_all,
+            patch.object(
+                app.workers,
+                "wait_for_complete",
+                new_callable=AsyncMock,
+            ) as mock_wait,
+        ):
+            mock_wait.return_value = None
+            await app.on_unmount()
+
+        mock_runner.cancel.assert_called_once()
+        mock_cancel_all.assert_called_once()
+        mock_wait.assert_awaited_once()
+        mock_runner.shutdown.assert_awaited_once()

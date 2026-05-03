@@ -14,6 +14,8 @@ Key responsibilities:
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import inspect
 import logging
 from typing import Any
 
@@ -77,6 +79,15 @@ class AgentRunner:
             )
             return
 
+    async def _stop_current_turn_task(self) -> None:
+        """Cancel the inner execute task, if any, and wait for it to finish."""
+        task = self._current_task
+        if task is None or task.done():
+            return
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+
     async def run_turn(self, user_message: str) -> None:
         """Process a user message through the agent and stream back results."""
         self.state.is_running = True
@@ -92,6 +103,8 @@ class AgentRunner:
             logger.exception("Error in run_turn")
             await self._queue.put(AgentError(message=str(exc), retryable=True))
         finally:
+            await self._stop_current_turn_task()
+            self._current_task = None
             self.state.is_running = False
             await self._queue.put(AgentTurnComplete())
 
@@ -245,14 +258,30 @@ class AgentRunner:
 
     async def shutdown(self) -> None:
         """Clean up resources on app exit."""
-        if self._current_task and not self._current_task.done():
-            self._current_task.cancel()
-        if self._checkpointer is not None:
-            try:
-                if hasattr(self._checkpointer, "close"):
-                    await self._checkpointer.close()
-            except Exception:
-                logger.debug("Error closing checkpointer", exc_info=True)
+        await self._stop_current_turn_task()
+        self._current_task = None
+
+        if self._checkpointer is None:
+            return
+
+        cp = self._checkpointer
+        self._checkpointer = None
+        try:
+            close_fn = getattr(cp, "close", None)
+            if callable(close_fn):
+                maybe = close_fn()
+                if inspect.isawaitable(maybe):
+                    await maybe
+            else:
+                conn = getattr(cp, "conn", None)
+                if conn is not None:
+                    conn_close = getattr(conn, "close", None)
+                    if callable(conn_close):
+                        maybe_conn = conn_close()
+                        if inspect.isawaitable(maybe_conn):
+                            await maybe_conn
+        except Exception:
+            logger.debug("Error closing checkpointer", exc_info=True)
 
     def get_event_queue(self) -> asyncio.Queue[AgentEvent]:
         """Return the event queue for the TUI to consume."""

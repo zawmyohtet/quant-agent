@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+from types import MethodType
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -136,16 +137,58 @@ class TestRunTurn:
         assert got_error, "Expected AgentError event"
         assert got_complete, "Expected AgentTurnComplete event"
 
+    @pytest.mark.asyncio
+    async def test_run_turn_cancellation_cancels_inner_execute(
+        self, runner: AgentRunner
+    ) -> None:
+        runner._agent = MagicMock()
+
+        async def track_cancel(self, user_message: str) -> None:
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                raise
+
+        with patch.object(runner, "_execute_turn", MethodType(track_cancel, runner)):
+            turn_task = asyncio.create_task(runner.run_turn("hi"))
+            for _ in range(100):
+                if runner._current_task is not None and not runner._current_task.done():
+                    break
+                await asyncio.sleep(0.001)
+            else:
+                pytest.fail("inner _execute_turn task did not start")
+
+            turn_task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await turn_task
+
+        assert runner._current_task is None
+        got_complete = False
+        queue = runner.get_event_queue()
+        while not queue.empty():
+            ev = queue.get_nowait()
+            if isinstance(ev, AgentTurnComplete):
+                got_complete = True
+        assert got_complete is True
+
 
 class TestShutdown:
     @pytest.mark.asyncio
     async def test_shutdown_cancels_active_task(self, runner: AgentRunner) -> None:
-        mock_task = MagicMock()
-        mock_task.done.return_value = False
-        runner._current_task = mock_task
+        async def hang() -> None:
+            try:
+                await asyncio.sleep(100.0)
+            except asyncio.CancelledError:
+                raise
+
+        hang_task = asyncio.create_task(hang())
+        runner._current_task = hang_task
 
         await runner.shutdown()
-        mock_task.cancel.assert_called_once()
+
+        assert hang_task.done()
+        assert hang_task.cancelled()
+        assert runner._current_task is None
 
     @pytest.mark.asyncio
     async def test_shutdown_closes_checkpointer(self, runner: AgentRunner) -> None:
@@ -155,6 +198,25 @@ class TestShutdown:
 
         await runner.shutdown()
         mock_checkpointer.close.assert_called_once()
+        assert runner._checkpointer is None
+
+    @pytest.mark.asyncio
+    async def test_shutdown_closes_conn_when_saver_has_no_close(
+        self, runner: AgentRunner
+    ) -> None:
+        mock_conn = AsyncMock()
+        mock_conn.close = AsyncMock()
+
+        class _SaverNoClose:
+            def __init__(self, conn: AsyncMock) -> None:
+                self.conn = conn
+
+        runner._checkpointer = _SaverNoClose(mock_conn)
+
+        await runner.shutdown()
+
+        mock_conn.close.assert_awaited_once()
+        assert runner._checkpointer is None
 
     @pytest.mark.asyncio
     async def test_shutdown_close_checkpointer_error(
@@ -168,6 +230,7 @@ class TestShutdown:
 
         await runner.shutdown()
         mock_checkpointer.close.assert_awaited_once()
+        assert runner._checkpointer is None
 
 
 class TestApplyTokenCounts:

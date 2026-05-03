@@ -27,7 +27,7 @@ check: # Lint + format check (no write)
 	uv run ruff format --check quantagent/ tests/
 
 mypy: # Run mypy type checking (package mode avoids duplicate __main__.py mapping)
-	uv run mypy -pquantagent 
+	uv run mypy -p quantagent 
 
 test: # Run tests
 	uv run pytest tests/ -v
