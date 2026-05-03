@@ -104,7 +104,8 @@ class _MessageDispatcher:
         tool_call_id = getattr(message, "tool_call_id", "")
         content = message.content
         result_str = str(content) if content else ""
-        return [ToolCallCompleted(call_id=tool_call_id, result=result_str)]
+        is_error = getattr(message, "status", None) == "error"
+        return [ToolCallCompleted(call_id=tool_call_id, result=result_str, is_error=is_error)]
 
 
 class _AIMessageHandler:
