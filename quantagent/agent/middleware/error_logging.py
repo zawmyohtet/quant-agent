@@ -13,14 +13,39 @@ logger = logging.getLogger(__name__)
 
 
 class ErrorLoggingMiddleware(AgentMiddleware):
-    """Logs every tool call failure with a full stack trace to the logging system.
+    """Logs every tool call failure to the logging system.
+
+    ToolNode swallows most exceptions and converts them to error ToolMessages
+    before they reach this middleware. Therefore we inspect the ToolMessage
+    result for ``status == "error"`` in addition to catching any exceptions
+    that do propagate.
 
     The file handler installed by ``quantagent.utils.logging.init_file_logging()``
     captures these records and writes them to ``~/.quantagent/logs/errors.log``.
-
-    The original error string is still returned to the LLM as a ToolMessage so the
-    agent can handle the failure gracefully.
     """
+
+    @staticmethod
+    def _is_error_result(result: ToolMessage | Command) -> bool:
+        """Return True if the result indicates a tool failure."""
+        if isinstance(result, ToolMessage):
+            return getattr(result, "status", None) == "error"
+        return False
+
+    def _log_and_return(
+        self, request: ToolCallRequest, result: ToolMessage | Command
+    ) -> ToolMessage | Command:
+        """Log error ToolMessages and return the result unchanged."""
+        if self._is_error_result(result):
+            tool_name = request.tool_call["name"]
+            tool_args = request.tool_call.get("args", {})
+            content = result.content if isinstance(result, ToolMessage) else str(result)
+            logger.error(
+                "Tool '%s' failed.  args=%s  error=%s",
+                tool_name,
+                tool_args,
+                content,
+            )
+        return result
 
     def _handle_tool_error(
         self, request: ToolCallRequest, exc: Exception
@@ -48,9 +73,10 @@ class ErrorLoggingMiddleware(AgentMiddleware):
     ) -> ToolMessage | Command:
         """Wrap tool execution — log errors, return error message to LLM."""
         try:
-            return handler(request)
+            result = handler(request)
         except Exception as exc:
             return self._handle_tool_error(request, exc)
+        return self._log_and_return(request, result)
 
     async def awrap_tool_call(
         self,
@@ -59,6 +85,7 @@ class ErrorLoggingMiddleware(AgentMiddleware):
     ) -> ToolMessage | Command:
         """Async wrap tool execution — log errors, return error message to LLM."""
         try:
-            return await handler(request)
+            result = await handler(request)
         except Exception as exc:
             return self._handle_tool_error(request, exc)
+        return self._log_and_return(request, result)
