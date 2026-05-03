@@ -1,10 +1,11 @@
 """LangChain @tool wrappers for all quant tools."""
 from __future__ import annotations
 
+import asyncio
 import inspect
 import json
 import logging
-from typing import Any
+from typing import Any, TypeVar
 
 from langchain.tools import tool
 
@@ -41,6 +42,9 @@ from quantagent.tui.config import QuantAgentConfig
 
 logger = logging.getLogger(__name__)
 
+_TOOL_TIMEOUT_SEC = 30
+T = TypeVar("T")
+
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
 
@@ -57,6 +61,11 @@ def _parse_comma_weights(weights: str) -> list[float]:
 def _json_dumps(obj: Any) -> str:
     """Serialize to JSON with standard indent and str fallback."""
     return json.dumps(obj, indent=2, default=str)
+
+
+async def _with_timeout(coro: asyncio.Future[T] | Any, timeout: float = _TOOL_TIMEOUT_SEC) -> T:
+    """Wrap an awaitable with a timeout, raising TimeoutError on expiry."""
+    return await asyncio.wait_for(coro, timeout=timeout)
 
 
 def _bind_provider(func: Any, provider: Any) -> Any:
@@ -148,7 +157,7 @@ async def _get_stock_quote(provider: Any, symbol: str) -> str:
     Args:
         symbol: Stock ticker symbol (e.g. AAPL, MSFT).
     """
-    result = await get_quote(provider, symbol)
+    result = await _with_timeout(get_quote(provider, symbol))
     return _json_dumps(result)
 
 
@@ -162,7 +171,7 @@ async def _get_ohlcv_data(
         period: Time period — 1d, 5d, 1mo, 3mo, 6mo, 1y, 2y, 5y, 10y.
         interval: Bar interval — 1m, 5m, 15m, 30m, 60m, 1d, 1wk, 1mo.
     """
-    df = await get_ohlcv(provider, symbol, period=period, interval=interval)
+    df = await _with_timeout(get_ohlcv(provider, symbol, period=period, interval=interval))
     summary = {
         "symbol": symbol,
         "period": period,
@@ -181,7 +190,7 @@ async def _get_stock_fundamentals(provider: Any, symbol: str) -> str:
     Args:
         symbol: Stock ticker symbol.
     """
-    result = await get_fundamentals(provider, symbol)
+    result = await _with_timeout(get_fundamentals(provider, symbol))
     return _json_dumps(result)
 
 
@@ -192,7 +201,7 @@ async def _get_stock_news(provider: Any, symbol: str, days: int = 7) -> str:
         symbol: Stock ticker symbol.
         days: Number of days to look back.
     """
-    result = await get_news(provider, symbol, days=days)
+    result = await _with_timeout(get_news(provider, symbol, days=days))
     return _json_dumps(result)
 
 
@@ -202,7 +211,7 @@ async def _search_stock_symbols(provider: Any, query: str) -> str:
     Args:
         query: Company name or partial ticker to search for.
     """
-    result = await search_symbols(provider, query)
+    result = await _with_timeout(search_symbols(provider, query))
     return _json_dumps(result)
 
 
@@ -215,7 +224,7 @@ async def _compute_technical_indicators(provider: Any, symbol: str, indicators: 
             sma_20, ema_50, rsi_14, macd, bbands, atr_14, adx_14, obv,
             stoch_k, stoch_d, vwap, supertrend.
     """
-    df = await get_ohlcv(provider, symbol, period="1y")
+    df = await _with_timeout(get_ohlcv(provider, symbol, period="1y"))
     indicator_list = [i.strip() for i in indicators.split(",")]
     result_df = compute_indicators(df, indicator_list)
     cols = [c for c in result_df.columns if c not in {"Open", "High", "Low", "Close", "Volume"}]
@@ -229,7 +238,7 @@ async def _detect_chart_patterns(provider: Any, symbol: str) -> str:
     Args:
         symbol: Stock ticker symbol.
     """
-    df = await get_ohlcv(provider, symbol, period="3mo")
+    df = await _with_timeout(get_ohlcv(provider, symbol, period="3mo"))
     patterns = detect_patterns(df)
     return _json_dumps({"symbol": symbol, "patterns": patterns[:10]})
 
@@ -240,7 +249,7 @@ async def _get_support_resistance(provider: Any, symbol: str) -> str:
     Args:
         symbol: Stock ticker symbol.
     """
-    df = await get_ohlcv(provider, symbol, period="6mo")
+    df = await _with_timeout(get_ohlcv(provider, symbol, period="6mo"))
     levels = detect_support_resistance(df)
     return _json_dumps(levels)
 
@@ -257,7 +266,7 @@ async def _run_backtest_tool(
         period: Backtest period — 1y, 2y, 5y, 10y.
     """
     config = BacktestConfig(symbol=symbol.upper(), strategy=strategy, period=period)
-    result = await run_backtest(provider, config)
+    result = await _with_timeout(run_backtest(provider, config))
     return format_backtest_result(result)
 
 
@@ -277,9 +286,9 @@ async def _screen_stocks_tool(
         limit: Maximum results to return.
     """
     crit = json.loads(criteria) if criteria else {}
-    df = await screen_stocks(
+    df = await _with_timeout(screen_stocks(
         provider, universe=universe, criteria=crit, sort_by=sort_by, limit=limit,
-    )
+    ))
     if df.empty:
         return "No stocks matched the criteria."
     return df.to_json(orient="records", indent=2)
@@ -295,7 +304,7 @@ async def _optimize_portfolio_tool(
         method: Optimization method — max_sharpe, min_vol, risk_parity, equal_weight.
     """
     sym_list = _parse_comma_symbols(symbols)
-    result = await optimize_portfolio(provider, sym_list, method=method)
+    result = await _with_timeout(optimize_portfolio(provider, sym_list, method=method))
     return _json_dumps(result)
 
 
@@ -309,7 +318,7 @@ async def _compute_portfolio_risk(provider: Any, symbols: str, weights: str) -> 
     sym_list = _parse_comma_symbols(symbols)
     w_list = _parse_comma_weights(weights)
     weight_dict = dict(zip(sym_list, w_list, strict=False))
-    result = await compute_portfolio_metrics(provider, weight_dict)
+    result = await _with_timeout(compute_portfolio_metrics(provider, weight_dict))
     return _json_dumps(result)
 
 
@@ -323,7 +332,7 @@ async def _run_monte_carlo(provider: Any, symbols: str, weights: str) -> str:
     sym_list = _parse_comma_symbols(symbols)
     w_list = _parse_comma_weights(weights)
     weight_dict = dict(zip(sym_list, w_list, strict=False))
-    result = await monte_carlo_simulation(provider, weight_dict)
+    result = await _with_timeout(monte_carlo_simulation(provider, weight_dict))
     return _json_dumps(result)
 
 
@@ -336,7 +345,7 @@ async def _compare_peers(provider: Any, symbols: str) -> str:
     sym_list = _parse_comma_symbols(symbols)
     fund_map = {}
     for sym in sym_list:
-        fund_map[sym] = await get_fundamentals(provider, sym)
+        fund_map[sym] = await _with_timeout(get_fundamentals(provider, sym))
     df = peer_comparison(fund_map)
     return df.to_json(orient="index", indent=2)
 
@@ -350,7 +359,7 @@ async def _get_earnings_calendar(
         symbol: Stock ticker symbol.
         lookahead_days: Days ahead to search (default 90).
     """
-    result = await get_earnings_calendar(provider, symbol, lookahead_days=lookahead_days)
+    result = await _with_timeout(get_earnings_calendar(provider, symbol, lookahead_days=lookahead_days))
     return _json_dumps(result)
 
 
@@ -359,7 +368,7 @@ async def _get_sector_performance(provider: Any) -> str:
 
     Returns 1D, 1W, 1M, 3M, and YTD returns for each sector.
     """
-    result = await get_sector_performance(provider)
+    result = await _with_timeout(get_sector_performance(provider))
     return _json_dumps(result)
 
 
@@ -370,7 +379,7 @@ async def _get_economic_indicators(provider: Any) -> str:
     CPI, and unemployment rate. Fields unavailable from the provider
     are returned as null.
     """
-    result = await get_economic_indicators(provider)
+    result = await _with_timeout(get_economic_indicators(provider))
     return _json_dumps(result)
 
 
