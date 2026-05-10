@@ -3,6 +3,7 @@ from __future__ import annotations
 from unittest.mock import patch
 
 from quantagent.agent.graph import _create_chat_model, _parse_model_string
+from quantagent.tui.config import QuantAgentConfig
 
 
 def test_parse_model_string_zai() -> None:
@@ -16,12 +17,14 @@ def test_create_chat_model_zai_uses_openai_compatible_base_url() -> None:
         "quantagent.agent.graph.init_chat_model",
         return_value=object(),
     ) as mock_init:
-        _create_chat_model("zai:glm-5.1")
+        _create_chat_model(
+            QuantAgentConfig(model="zai:glm-5.1", zai_api_key="test-zai-key")
+        )
 
     mock_init.assert_called_once_with(
         model="glm-5.1",
         model_provider="openai",
-        api_key=None,
+        api_key="test-zai-key",
         base_url="https://api.z.ai/api/paas/v4/",
     )
 
@@ -31,7 +34,7 @@ def test_create_chat_model_non_zai_passthrough() -> None:
         "quantagent.agent.graph.init_chat_model",
         return_value=object(),
     ) as mock_init:
-        _create_chat_model("anthropic:claude-sonnet-4-6")
+        _create_chat_model(QuantAgentConfig(model="anthropic:claude-sonnet-4-6"))
 
     mock_init.assert_called_once_with(
         "claude-sonnet-4-6",

@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import logging
-import os
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -24,7 +23,6 @@ logger = logging.getLogger(__name__)
 
 # Root used by FilesystemBackend — skills paths are resolved relative to this
 BACKEND_ROOT = Path.home() / ".quantagent"
-_DEFAULT_ZAI_BASE_URL = "https://api.z.ai/api/paas/v4/"
 
 
 def _parse_model_string(model: str) -> tuple[str, str | None]:
@@ -42,17 +40,17 @@ def _parse_model_string(model: str) -> tuple[str, str | None]:
     return model, None
 
 
-def _create_chat_model(model: str) -> Any:
+def _create_chat_model(config: QuantAgentConfig) -> Any:
     """Create a chat model from a ``provider:model`` string."""
-    model_name, model_provider = _parse_model_string(model)
+    model_name, model_provider = _parse_model_string(config.model)
     if model_provider != "zai":
         return init_chat_model(model_name, model_provider=model_provider)
 
     return init_chat_model(
         model=model_name,
         model_provider="openai",
-        api_key=os.getenv("ZAI_API_KEY"),
-        base_url=os.getenv("ZAI_API_BASE", _DEFAULT_ZAI_BASE_URL),
+        api_key=config.zai_api_key,
+        base_url=config.zai_api_base,
     )
 
 
@@ -73,7 +71,7 @@ def create_quant_agent(
       2. User skills      (~/.quantagent/skills/)
       3. Extra dirs       (config.extra_skill_dirs)
     """
-    model = _create_chat_model(config.model)
+    model = _create_chat_model(config)
 
     tools = build_tool_registry(config)
 
