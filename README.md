@@ -64,6 +64,7 @@ uv sync
 # (Optional) Set your API keys in ~/.quantagent/.env
 echo "OPENAI_API_KEY=sk-..." >> ~/.quantagent/.env
 echo "ANTHROPIC_API_KEY=sk-ant-..." >> ~/.quantagent/.env
+echo "ZAI_API_KEY=..." >> ~/.quantagent/.env
 ```
 
 ### Run
@@ -75,6 +76,9 @@ uv run quantagent
 # Or with options
 uv run quantagent --model openai:gpt-4o --provider yfinance
 ```
+
+`zai:` models use Z.AI's OpenAI-compatible API. By default QuantAgent targets
+`https://api.z.ai/api/paas/v4/`. Override that with `ZAI_API_BASE` if needed.
 
 ### First Commands
 

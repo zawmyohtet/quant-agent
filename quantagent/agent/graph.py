@@ -40,6 +40,20 @@ def _parse_model_string(model: str) -> tuple[str, str | None]:
     return model, None
 
 
+def _create_chat_model(config: QuantAgentConfig) -> Any:
+    """Create a chat model from a ``provider:model`` string."""
+    model_name, model_provider = _parse_model_string(config.model)
+    if model_provider != "zai":
+        return init_chat_model(model_name, model_provider=model_provider)
+
+    return init_chat_model(
+        model=model_name,
+        model_provider="openai",
+        api_key=config.zai_api_key,
+        base_url=config.zai_api_base,
+    )
+
+
 def create_quant_agent(
     config: QuantAgentConfig,
     checkpointer: Any,
@@ -57,9 +71,7 @@ def create_quant_agent(
       2. User skills      (~/.quantagent/skills/)
       3. Extra dirs       (config.extra_skill_dirs)
     """
-    model_name, model_provider = _parse_model_string(config.model)
-
-    model = init_chat_model(model_name, model_provider=model_provider)
+    model = _create_chat_model(config)
 
     tools = build_tool_registry(config)
 
