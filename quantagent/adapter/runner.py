@@ -30,9 +30,11 @@ from quantagent.adapter.events import (
     AgentTurnComplete,
     ApprovalRequest,
     SystemNotification,
+    ToolProgress,
 )
 from quantagent.agent.graph import create_quant_agent
 from quantagent.tui.session_state import SessionState
+from quantagent.utils.progress import set_progress_sink
 
 logger = logging.getLogger(__name__)
 
@@ -126,6 +128,7 @@ class AgentRunner:
         processor = _StreamProcessor(
             self._agent, config, self._queue, self._pending_interrupts
         )
+        self._install_progress_sink()
 
         try:
             while True:
@@ -149,6 +152,23 @@ class AgentRunner:
         except Exception as exc:
             logger.exception("Agent streaming error")
             await self._queue.put(AgentError(message=str(exc), retryable=True))
+        finally:
+            set_progress_sink(None)
+
+    def _install_progress_sink(self) -> None:
+        """Route in-tool progress reports onto the event queue.
+
+        Tools may report from worker threads (``asyncio.to_thread``), so
+        the queue put is marshalled back onto the runner's event loop.
+        """
+        loop = asyncio.get_running_loop()
+
+        def _sink(call_id: str, text: str) -> None:
+            loop.call_soon_threadsafe(
+                self._queue.put_nowait, ToolProgress(call_id=call_id, text=text)
+            )
+
+        set_progress_sink(_sink)
 
     def _apply_token_counts(self, context: _TurnContext) -> None:
         """Persist token usage from the turn context to session state."""

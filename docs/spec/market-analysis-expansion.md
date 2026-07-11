@@ -1155,11 +1155,22 @@ New market-analysis functions are exposed to the agent via `agent/tools_registry
 - No try/except inside tools — `ErrorLoggingMiddleware` handles errors.
 - Every wrapper runs under `_with_timeout(...)` with `_TOOL_TIMEOUT_SEC = 30`. **This is too tight for cold-cache universe operations.** Add a per-tool timeout override to `_with_timeout` (e.g., 120s for deep-path breadth and full-universe screens); fast-path tools keep 30s. The fast-path/deep-path split (§5.4) exists precisely so the default experience never waits on a cold cache.
 
-### 14.3 Dependency Rules
+### 14.3 Tool Progress Channel
+
+Long-running tools (workflows, breadth warm-up, universe screens,
+reports) report live progress to the TUI through a dependency-clean
+channel: `utils/progress.py` holds a sink + a call-id contextvar;
+`ToolProgressMiddleware` (agent layer) binds the active tool-call id
+around each tool invocation; `AgentRunner` (adapter) installs a sink
+that enqueues `ToolProgress` events; the TUI rewrites the running tool
+line in place (`● run_workflow_tool — step 2/4: sectors…`). Tools call
+`report_progress(text)` — a no-op outside the app.
+
+### 14.4 Dependency Rules
 
 Target rules are unchanged (`tools/` must not import `tui/`, `agent/`, or `adapter/`). However, `tools/screener.py` and `tools/providers/__init__.py` **already violate** this by importing `quantagent.tui.config`. New modules must not deepen the violation: all `~/.quantagent/` paths come from `tools/_paths.py` (§4.4), and any config values tools need are passed as function parameters. Migrating the existing violations is a recommended (non-blocking) Phase 0 cleanup.
 
-### 14.4 New Dependencies
+### 14.5 New Dependencies
 
 | Dependency | Phase | Purpose |
 |---|---|---|

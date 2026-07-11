@@ -29,3 +29,38 @@ class TestMessageView:
         view.clear()
         assert view._all_entries == []
         assert view._agent_buffer_id is None
+
+
+class TestToolProgress:
+    def test_updates_running_tool_line(self) -> None:
+        view = _make_view()
+        view.add_tool_call("c1", "run_workflow_tool", {})
+        view.update_tool_progress("c1", "step 2/4: sectors…")
+        entry = view._find_entry("c1")
+        assert entry is not None
+        assert entry.content == "● run_workflow_tool — step 2/4: sectors…"
+        assert entry.kind == "tool_start"
+
+    def test_ignores_completed_tool(self) -> None:
+        view = _make_view()
+        view.add_tool_call("c1", "run_workflow_tool", {})
+        view.complete_tool_call("c1", "result")
+        view.update_tool_progress("c1", "late progress")
+        entry = view._find_entry("c1")
+        assert entry is not None
+        assert entry.content == "✓ run_workflow_tool — done"
+
+    def test_empty_call_id_falls_back_to_latest_running(self) -> None:
+        view = _make_view()
+        view.add_tool_call("c1", "first_tool", {})
+        view.complete_tool_call("c1", "done")
+        view.add_tool_call("c2", "second_tool", {})
+        view.update_tool_progress("", "halfway")
+        entry = view._find_entry("c2")
+        assert entry is not None
+        assert entry.content == "● second_tool — halfway"
+
+    def test_no_running_tool_is_noop(self) -> None:
+        view = _make_view()
+        view.add_user_message("hi")
+        view.update_tool_progress("", "orphan progress")  # must not raise

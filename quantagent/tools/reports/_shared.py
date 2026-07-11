@@ -6,6 +6,7 @@ from collections.abc import Coroutine
 from typing import Any
 
 from quantagent.tools.reports.base import ReportSection
+from quantagent.utils.progress import report_progress
 
 logger = logging.getLogger(__name__)
 
@@ -18,6 +19,7 @@ async def safe_section(
     Reports must render even when one data source is down; each section
     is isolated so a single failure never kills the whole report.
     """
+    report_progress(f"building report section: {title}…")
     try:
         return await builder
     except Exception as exc:

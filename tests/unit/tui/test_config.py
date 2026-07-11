@@ -13,7 +13,8 @@ class TestQuantAgentConfig:
         assert cfg.model == "anthropic:claude-sonnet-4-6"
         assert cfg.provider == "yfinance"
         assert cfg.theme == "dark"
-        assert "run_backtest" in cfg.approval_required
+        assert "run_backtest_tool" in cfg.approval_required
+        assert "delete_universe_tool" in cfg.approval_required
         assert cfg.zai_api_key is None
         assert cfg.zai_api_base == "https://api.z.ai/api/paas/v4/"
 
@@ -32,6 +33,19 @@ class TestQuantAgentConfig:
             assert loaded.provider == "polygon"
         finally:
             config_mod._DEFAULT_CONFIG_PATH = original_path
+
+    def test_load_migrates_legacy_approval_names(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import quantagent.tui.config as config_mod
+
+        path = tmp_path / "config.toml"
+        monkeypatch.setattr(config_mod, "_DEFAULT_CONFIG_PATH", path)
+        path.write_text('approval_required = ["run_backtest", "custom_tool"]\n')
+
+        loaded = QuantAgentConfig.load()
+
+        assert loaded.approval_required == ["run_backtest_tool", "custom_tool"]
 
     def test_load_applies_zai_env_values(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

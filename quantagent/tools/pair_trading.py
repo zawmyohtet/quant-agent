@@ -18,6 +18,7 @@ from statsmodels.tsa.stattools import coint  # type: ignore[import-untyped]
 
 from quantagent.tools.providers.base import AbstractDataProvider
 from quantagent.tools.sector_analysis import classify_symbols
+from quantagent.utils.progress import report_progress
 
 logger = logging.getLogger(__name__)
 
@@ -156,10 +157,13 @@ async def find_cointegrated_pairs(
     symbols = await _resolve_symbols(provider, universe, sector, max_symbols)
     if len(symbols) < 2:
         return pd.DataFrame()
+    report_progress(f"downloading price history for {len(symbols)} symbols…")
     frames = await provider.get_batch_ohlcv(symbols, period="1y")
     matrix = _close_matrix(frames)
     if matrix.empty or len(matrix.columns) < 2:
         return pd.DataFrame()
+    n = len(matrix.columns)
+    report_progress(f"testing {n * (n - 1) // 2} pairs for cointegration…")
     rows = await asyncio.to_thread(
         _scan_pairs, matrix, pvalue_threshold, min_correlation
     )

@@ -44,6 +44,18 @@ class ToolCallCompleted(AgentEvent):
 
 
 @dataclass
+class ToolProgress(AgentEvent):
+    """Live progress from inside a running tool call.
+
+    ``call_id`` matches the ToolCallStarted event of the running tool;
+    an empty call_id means "the most recent running tool".
+    """
+
+    call_id: str
+    text: str
+
+
+@dataclass
 class AgentError(AgentEvent):
     """Emitted when the agent encounters an error."""
 

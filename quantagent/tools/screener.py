@@ -22,8 +22,11 @@ import pandas as pd
 from quantagent.tools.providers.base import AbstractDataProvider
 from quantagent.tools.technical import wilder_rsi
 from quantagent.tools.universe import load_universe
+from quantagent.utils.progress import report_progress
 
 logger = logging.getLogger(__name__)
+
+_PROGRESS_EVERY = 25
 
 
 def _fetch_universe_tickers(universe: str) -> list[str]:
@@ -68,10 +71,16 @@ async def _fetch_screening_rows(
 ) -> list[dict]:
     """Build screening rows for all tickers with bounded concurrency."""
     semaphore = asyncio.Semaphore(8)
+    done = 0
 
     async def _bounded(ticker: str) -> dict | None:
+        nonlocal done
         async with semaphore:
-            return await _build_screening_row(provider, ticker)
+            row = await _build_screening_row(provider, ticker)
+        done += 1
+        if done % _PROGRESS_EVERY == 0:
+            report_progress(f"screening fundamentals: {done}/{len(tickers)} symbols")
+        return row
 
     results = await asyncio.gather(*(_bounded(t) for t in tickers))
     return [row for row in results if row is not None]
@@ -291,7 +300,9 @@ async def screen_by_technicals(
     tickers = symbols if symbols is not None else _fetch_universe_tickers(universe)
     if not tickers:
         return pd.DataFrame()
+    report_progress(f"downloading price history for {len(tickers)} symbols…")
     frames = await provider.get_batch_ohlcv(tickers, period="1y")
+    report_progress(f"evaluating technical criteria on {len(frames)} symbols…")
     rows = []
     for sym, df in frames.items():
         if df.empty:
@@ -362,7 +373,10 @@ async def _universe_frames(
     tickers = _fetch_universe_tickers(universe)
     if not tickers:
         return {}
-    return await provider.get_batch_ohlcv(tickers, period="1y")
+    report_progress(f"downloading price history for {len(tickers)} symbols…")
+    frames = await provider.get_batch_ohlcv(tickers, period="1y")
+    report_progress(f"scanning {len(frames)} symbols for patterns…")
+    return frames
 
 
 def _vcp_metrics(

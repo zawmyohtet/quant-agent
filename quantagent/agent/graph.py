@@ -13,6 +13,7 @@ from langchain.chat_models import init_chat_model
 from quantagent.agent.middleware.approval import ApprovalMiddleware
 from quantagent.agent.middleware.error_logging import ErrorLoggingMiddleware
 from quantagent.agent.middleware.memory import QuantMemoryMiddleware
+from quantagent.agent.middleware.progress import ToolProgressMiddleware
 from quantagent.agent.middleware.summarization import SummarizationMiddleware
 from quantagent.agent.prompts import BASE_SYSTEM_PROMPT
 from quantagent.agent.skills import SkillResolver
@@ -86,6 +87,7 @@ def create_quant_agent(
 
     middleware = [
         ErrorLoggingMiddleware(),
+        ToolProgressMiddleware(),
         QuantMemoryMiddleware(),
         SummarizationMiddleware(token_threshold=80_000, model=model),
     ]

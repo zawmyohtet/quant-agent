@@ -21,6 +21,7 @@ import pandas as pd
 from quantagent.tools._paths import cache_dir, ensure_dir
 from quantagent.tools.providers.base import AbstractDataProvider
 from quantagent.tools.universe import load_universe
+from quantagent.utils.progress import report_progress
 
 logger = logging.getLogger(__name__)
 
@@ -90,6 +91,10 @@ class BreadthStore:
         fetched = 0
         for start in range(0, len(symbols), _WARM_CHUNK_SIZE):
             chunk = symbols[start : start + _WARM_CHUNK_SIZE]
+            report_progress(
+                f"warming {universe} breadth cache: "
+                f"{start}/{len(symbols)} symbols…"
+            )
             frames = await provider.get_batch_ohlcv(chunk, period=period)
             total_rows += await self._ingest(universe, frames)
             fetched += len(frames)
@@ -97,6 +102,7 @@ class BreadthStore:
                 "Breadth warm-up %s: %d/%d symbols ingested",
                 universe, min(start + _WARM_CHUNK_SIZE, len(symbols)), len(symbols),
             )
+        report_progress(f"breadth cache for {universe} ready ({fetched} symbols)")
         await self._touch(universe)
         return {"universe": universe, "symbols": fetched, "rows": total_rows}
 

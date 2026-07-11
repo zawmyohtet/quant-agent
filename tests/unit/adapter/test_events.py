@@ -9,6 +9,7 @@ from quantagent.adapter.events import (
     SystemNotification,
     ToolCallCompleted,
     ToolCallStarted,
+    ToolProgress,
 )
 
 
@@ -46,6 +47,12 @@ class TestAgentEvents:
     def test_approval_request(self) -> None:
         e = ApprovalRequest(call_id="c1", tool_name="bar", args={})
         assert e.tool_name == "bar"
+        assert isinstance(e, AgentEvent)
+
+    def test_tool_progress(self) -> None:
+        e = ToolProgress(call_id="c1", text="step 2/4: sectors")
+        assert e.call_id == "c1"
+        assert e.text == "step 2/4: sectors"
         assert isinstance(e, AgentEvent)
 
 

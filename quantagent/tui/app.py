@@ -19,6 +19,7 @@ from quantagent.adapter.events import (
     SystemNotification,
     ToolCallCompleted,
     ToolCallStarted,
+    ToolProgress,
 )
 from quantagent.adapter.runner import AgentRunner
 from quantagent.tui.config import QuantAgentConfig
@@ -161,6 +162,9 @@ class QuantAgentApp(App):
 
         elif isinstance(event, ToolCallCompleted):
             messages.complete_tool_call(event.call_id, event.result, is_error=event.is_error)
+
+        elif isinstance(event, ToolProgress):
+            messages.update_tool_progress(event.call_id, event.text)
 
         elif isinstance(event, AgentError):
             messages.add_error_message(event.message, retryable=event.retryable)

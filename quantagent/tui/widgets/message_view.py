@@ -62,6 +62,23 @@ class MessageView(ScrollableContainer):
         )
         self._append_entry(entry)
 
+    def update_tool_progress(self, call_id: str, text: str) -> None:
+        """Update a running tool line with in-flight progress text.
+
+        Falls back to the most recent running tool when the call_id is
+        empty or unknown; completed tool lines are never rewritten.
+        """
+        entry = self._find_entry(call_id) if call_id else None
+        if entry is None or entry.kind != "tool_start":
+            entry = next(
+                (e for e in reversed(self._all_entries) if e.kind == "tool_start"),
+                None,
+            )
+        if entry is None:
+            return
+        entry.content = f"● {entry.metadata['tool_name']} — {text}"
+        self._update_dom(entry)
+
     def complete_tool_call(self, call_id: str, result: str, *, is_error: bool = False) -> None:
         entry = self._find_entry(call_id)
         if entry:

@@ -9,7 +9,7 @@ license: MIT
 metadata:
   author: quantagent
   version: "1.0"
-allowed-tools: synthesize_conviction, check_risk_circuit_breaker, check_trade_discipline, journal_log_trade, journal_update_status, journal_close_trade, journal_open_trades, journal_history, journal_stats, detect_market_regime
+allowed-tools: synthesize_conviction_tool, check_risk_circuit_breaker, check_trade_discipline, journal_log_trade, journal_update_status, journal_close_trade, journal_open_trades, journal_history, journal_stats, detect_market_regime
 ---
 
 # Exposure & Trading Discipline
@@ -22,7 +22,7 @@ go/no-go statement, never just analysis.
 
 ## The Discipline Stack (run in order)
 
-1. **Exposure context** — `synthesize_conviction` (or
+1. **Exposure context** — `synthesize_conviction_tool` (or
    `detect_market_regime`). The conviction score maps to an equity
    exposure band; new longs in a `defensive`/`risk-off` stance need an
    explicit justification and reduced size.

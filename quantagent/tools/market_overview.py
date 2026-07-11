@@ -24,6 +24,7 @@ from quantagent.tools.market_breadth import (
 from quantagent.tools.providers.base import AbstractDataProvider
 from quantagent.tools.sector_analysis import classify_symbols
 from quantagent.tools.technical import detect_support_resistance, wilder_rsi
+from quantagent.utils.progress import report_progress
 
 logger = logging.getLogger(__name__)
 
@@ -106,6 +107,8 @@ async def _universe_matrices(
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Close and volume matrices for a universe from the breadth store."""
     store = BreadthStore()
+    if not await store.is_warm(universe):
+        report_progress(f"loading {universe} universe data (may warm the cache)…")
     await store.ensure(provider, universe)
     closes = await store.load_field(universe, "close")
     volumes = await store.load_field(universe, "volume")

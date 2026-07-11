@@ -370,3 +370,29 @@ class TestSetModel:
 
 
 
+
+
+class TestProgressSink:
+    @pytest.mark.asyncio
+    async def test_installed_sink_enqueues_tool_progress(
+        self, runner: AgentRunner
+    ) -> None:
+        from quantagent.adapter.events import ToolProgress
+        from quantagent.utils.progress import (
+            bind_call_id,
+            report_progress,
+            set_progress_sink,
+        )
+
+        runner._install_progress_sink()
+        try:
+            with bind_call_id("call-1"):
+                report_progress("warming cache: 100/500")
+            # call_soon_threadsafe schedules onto the loop — yield once.
+            await asyncio.sleep(0)
+            event = runner.get_event_queue().get_nowait()
+            assert isinstance(event, ToolProgress)
+            assert event.call_id == "call-1"
+            assert event.text == "warming cache: 100/500"
+        finally:
+            set_progress_sink(None)

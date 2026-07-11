@@ -10,7 +10,7 @@ license: MIT
 metadata:
   author: quantagent
   version: "1.0"
-allowed-tools: compute_technical_indicators, run_backtest, get_ohlcv_data
+allowed-tools: compute_technical_indicators, run_backtest_tool, get_ohlcv_data
 ---
 
 # Strategy Patterns

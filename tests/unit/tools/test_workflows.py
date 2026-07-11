@@ -177,3 +177,17 @@ def test_custom_workflow_no_steps_raises() -> None:
     (workflows_dir() / "empty.yaml").write_text("name: empty\nsteps: []\n")
     with pytest.raises(ValueError):
         load_custom_workflow("empty")
+
+
+async def test_run_workflow_reports_progress() -> None:
+    from quantagent.utils.progress import set_progress_sink
+
+    received: list[str] = []
+    set_progress_sink(lambda call_id, text: received.append(text))
+    try:
+        workflow = get_workflow("stock_research", target="AAPL")
+        await run_workflow(_market_provider(), workflow)
+    finally:
+        set_progress_sink(None)
+    assert any("step 1/3" in msg for msg in received)
+    assert any("quote done" in msg for msg in received)

@@ -13,6 +13,7 @@ import pandas as pd
 
 from quantagent.tools.cache import DataCache
 from quantagent.tools.providers.base import AbstractDataProvider
+from quantagent.utils.progress import report_progress
 
 logger = logging.getLogger(__name__)
 
@@ -152,8 +153,10 @@ async def _fetch_calendars(
     cache = DataCache()
     events: list[dict] = []
     semaphore = asyncio.Semaphore(8)
+    fetched = 0
 
     async def _fetch(sym: str) -> None:
+        nonlocal fetched
         key = f"earnings_cal:{sym}"
         cached = await cache.get(key)
         if cached is not None:
@@ -165,6 +168,9 @@ async def _fetch_calendars(
             except Exception as exc:
                 logger.debug("Earnings calendar failed for %s: %s", sym, exc)
                 return
+        fetched += 1
+        if fetched % 25 == 0:
+            report_progress(f"fetching earnings calendars: {fetched}/{len(symbols)}…")
         await cache.set(key, calendar, ttl=_CALENDAR_TTL_SEC)
         events.extend(calendar)
 

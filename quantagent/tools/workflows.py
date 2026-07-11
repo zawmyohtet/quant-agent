@@ -64,6 +64,7 @@ from quantagent.tools.sector_analysis import (
     detect_sector_rotation,
     get_sector_performance_ranked,
 )
+from quantagent.utils.progress import report_progress
 
 logger = logging.getLogger(__name__)
 
@@ -174,7 +175,8 @@ async def run_workflow(
     """
     results: dict[str, Any] = {}
     lines = []
-    for step in workflow.steps:
+    total = len(workflow.steps)
+    for i, step in enumerate(workflow.steps, start=1):
         fn = STEP_REGISTRY.get(step.tool_name)
         if fn is None:
             raise ValueError(
@@ -183,8 +185,10 @@ async def run_workflow(
             )
         params = _resolve_parameters(step.parameters, results)
         logger.info("Workflow %s: running %s", workflow.name, step.tool_name)
+        report_progress(f"{workflow.name}: step {i}/{total} — {step.tool_name}…")
         output = await fn(provider, **params)
         results[step.output_key] = output
+        report_progress(f"{workflow.name}: step {i}/{total} — {step.output_key} done")
         lines.append(f"- {step.output_key} ({step.tool_name}): {_describe(output)}")
     return WorkflowResult(
         workflow_name=workflow.name,

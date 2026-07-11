@@ -9,7 +9,7 @@ license: MIT
 metadata:
   author: quantagent
   version: "1.0"
-allowed-tools: compute_portfolio_metrics, run_backtest
+allowed-tools: compute_portfolio_risk, run_backtest_tool
 ---
 
 # Risk Framework

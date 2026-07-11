@@ -10,7 +10,7 @@ license: MIT
 metadata:
   author: quantagent
   version: "1.0"
-allowed-tools: run_backtest, get_ohlcv_data
+allowed-tools: run_backtest_tool, get_ohlcv_data
 ---
 
 # Backtesting
@@ -32,7 +32,7 @@ Always run buy_and_hold first on the same symbol and period.
 Every strategy must beat buy-and-hold on risk-adjusted basis (Sharpe) to be worth using.
 
 ### 2. Run the candidate strategy
-Use run_backtest with the user's requested strategy and a minimum 5-year period.
+Use run_backtest_tool with the user's requested strategy and a minimum 5-year period.
 Shorter periods are unreliable — flag this to the user if they request < 2y.
 
 ### 3. Check statistical reliability

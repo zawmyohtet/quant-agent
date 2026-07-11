@@ -15,6 +15,7 @@ from quantagent.tools.cache import DataCache
 from quantagent.tools.providers.base import AbstractDataProvider
 from quantagent.tools.technical import compute_indicators
 from quantagent.tools.universe import CYCLICAL_SECTORS, DEFENSIVE_SECTORS, SECTOR_ETFS
+from quantagent.utils.progress import report_progress
 
 logger = logging.getLogger(__name__)
 
@@ -136,8 +137,10 @@ async def classify_symbols(
     cache = DataCache()
     results: dict[str, dict] = {}
     semaphore = asyncio.Semaphore(8)
+    fetched = 0
 
     async def _classify(sym: str) -> None:
+        nonlocal fetched
         key = f"classification:{sym}"
         cached = await cache.get(key)
         if cached is not None:
@@ -149,6 +152,9 @@ async def classify_symbols(
             except Exception as exc:
                 logger.warning("Classification failed for %s: %s", sym, exc)
                 return
+        fetched += 1
+        if fetched % 25 == 0:
+            report_progress(f"classifying symbols: {fetched}/{len(symbols)}…")
         results[sym] = info
         await cache.set(key, info, ttl=_CLASSIFICATION_TTL_SEC)
 

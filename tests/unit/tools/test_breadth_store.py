@@ -77,3 +77,16 @@ async def test_warm_up_unknown_universe_raises(
     monkeypatch.setattr(store_mod, "load_universe", lambda name: [])
     with pytest.raises(ValueError):
         await BreadthStore().warm_up(_etf_provider(), "sp500")
+
+
+async def test_warm_up_reports_progress() -> None:
+    from quantagent.utils.progress import set_progress_sink
+
+    received: list[str] = []
+    set_progress_sink(lambda call_id, text: received.append(text))
+    try:
+        await BreadthStore().warm_up(_etf_provider(), "sector_etfs")
+    finally:
+        set_progress_sink(None)
+    assert any("warming sector_etfs" in msg for msg in received)
+    assert any("ready (11 symbols)" in msg for msg in received)

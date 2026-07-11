@@ -8,7 +8,7 @@ license: MIT
 metadata:
   author: quantagent
   version: "1.0"
-allowed-tools: find_cointegrated_pairs, compute_spread_metrics, run_backtest, detect_market_regime
+allowed-tools: find_cointegrated_pairs, compute_spread_metrics, run_backtest_tool, detect_market_regime
 ---
 
 # Pair Trading / Statistical Arbitrage
