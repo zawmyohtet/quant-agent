@@ -14,6 +14,10 @@ from quantagent.tools._paths import reports_dir
 from quantagent.tools.backtesting import BacktestConfig, format_backtest_result, run_backtest
 from quantagent.tools.breadth_store import BreadthStore
 from quantagent.tools.conviction import synthesize_conviction
+from quantagent.tools.event_analysis import (
+    analyze_earnings_impact,
+    get_earnings_calendar_range,
+)
 from quantagent.tools.fundamental import (
     compute_dcf,
     peer_comparison,
@@ -45,6 +49,10 @@ from quantagent.tools.market_overview import (
     get_market_summary,
     get_most_active,
     get_top_movers,
+)
+from quantagent.tools.pair_trading import (
+    compute_spread_metrics,
+    find_cointegrated_pairs,
 )
 from quantagent.tools.portfolio import (
     compute_portfolio_metrics,
@@ -839,6 +847,102 @@ async def _check_trade_discipline(provider: Any, trade_id: str) -> str:
     return _json_dumps(result)
 
 
+async def _find_cointegrated_pairs(
+    provider: Any,
+    universe: str = "sp500",
+    sector: str = "",
+    max_symbols: int = 60,
+    limit: int = 20,
+) -> str:
+    """Find cointegrated stock pairs for statistical arbitrage.
+
+    Scans pairs within a universe (Engle-Granger test, correlation
+    pre-filter). Restricting to one sector is strongly recommended —
+    cross-sector pairs cointegrate by accident more often than by
+    economics. Returns hedge ratio, half-life, and current z-score
+    per pair.
+
+    Args:
+        universe: Universe to scan — sp500, nasdaq100, sector_etfs, or custom.
+        sector: Optional sector filter (e.g. Energy, Technology).
+        max_symbols: Cap on symbols scanned (pair count grows quadratically).
+        limit: Maximum pairs returned.
+    """
+    df = await _with_timeout(
+        find_cointegrated_pairs(
+            provider, universe=universe, sector=sector or None,
+            max_symbols=max_symbols, limit=limit,
+        ),
+        timeout=_LONG_TOOL_TIMEOUT_SEC,
+    )
+    return _df_or_message(df, "No cointegrated pairs found.")
+
+
+async def _compute_spread_metrics(
+    provider: Any, symbol_a: str, symbol_b: str, period: str = "1y"
+) -> str:
+    """Compute pair-trading spread metrics for two symbols.
+
+    Returns the OLS hedge ratio, cointegration p-value, current spread
+    z-score, mean-reversion half-life in days, and an entry/exit signal
+    (|z| >= 2 entry-zone with legs stated, |z| <= 0.5 exit-zone).
+
+    Args:
+        symbol_a: First leg (spread = a - hedge_ratio * b).
+        symbol_b: Second leg.
+        period: History window — 6mo, 1y, 2y.
+    """
+    result = await _with_timeout(
+        compute_spread_metrics(provider, symbol_a, symbol_b, period=period)
+    )
+    return _json_dumps(result)
+
+
+async def _analyze_earnings_impact(provider: Any, symbol: str, quarters: int = 8) -> str:
+    """Analyze how a stock historically reacts to its earnings reports.
+
+    Per past report: overnight gap, day-1 move, and 5d/20d post-event
+    drift, plus aggregates (average absolute move, positive rate).
+    Useful for sizing expectations ahead of an upcoming report.
+
+    Args:
+        symbol: Stock ticker symbol.
+        quarters: Number of past reports to analyze (default 8).
+    """
+    result = await _with_timeout(
+        analyze_earnings_impact(provider, symbol, quarters=quarters)
+    )
+    return _json_dumps(result)
+
+
+async def _get_earnings_calendar_range(
+    provider: Any,
+    start_date: str,
+    end_date: str,
+    universe: str = "sp500",
+    symbols: str = "",
+) -> str:
+    """Upcoming earnings for a universe within a date range.
+
+    Slow on first use for a full universe (per-symbol fetches, cached
+    12h); pass explicit symbols for a fast targeted lookup.
+
+    Args:
+        start_date: Range start (YYYY-MM-DD).
+        end_date: Range end (YYYY-MM-DD).
+        universe: Universe to scan when symbols is empty.
+        symbols: Optional comma-separated symbols.
+    """
+    symbol_list = _parse_comma_symbols(symbols) if symbols else None
+    df = await _with_timeout(
+        get_earnings_calendar_range(
+            provider, start_date, end_date, universe=universe, symbols=symbol_list
+        ),
+        timeout=_WARMUP_TIMEOUT_SEC,
+    )
+    return _df_or_message(df, "No earnings reports in that range.")
+
+
 async def _synthesize_conviction_tool(provider: Any) -> str:
     """Synthesize a 0-100 market conviction score with exposure guidance.
 
@@ -1225,6 +1329,10 @@ def build_tool_registry(config: QuantAgentConfig) -> list[Any]:
         _bind_provider(_run_workflow_tool, provider),
         _bind_provider(_journal_close_trade, provider),
         _bind_provider(_check_trade_discipline, provider),
+        _bind_provider(_find_cointegrated_pairs, provider),
+        _bind_provider(_compute_spread_metrics, provider),
+        _bind_provider(_analyze_earnings_impact, provider),
+        _bind_provider(_get_earnings_calendar_range, provider),
         journal_log_trade,
         journal_update_status,
         journal_open_trades,

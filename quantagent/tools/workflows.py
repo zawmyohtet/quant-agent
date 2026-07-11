@@ -33,6 +33,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from quantagent.tools._paths import workflows_dir
 from quantagent.tools.conviction import synthesize_conviction
+from quantagent.tools.event_analysis import analyze_earnings_impact
 from quantagent.tools.market_breadth import (
     compute_advance_decline,
     compute_market_sentiment,
@@ -48,6 +49,7 @@ from quantagent.tools.market_overview import (
     get_most_active,
     get_top_movers,
 )
+from quantagent.tools.pair_trading import compute_spread_metrics, find_cointegrated_pairs
 from quantagent.tools.portfolio import compute_portfolio_metrics, optimize_portfolio
 from quantagent.tools.providers.base import AbstractDataProvider
 from quantagent.tools.screener import (
@@ -124,6 +126,9 @@ STEP_REGISTRY: dict[str, StepFn] = {
     "optimize_portfolio": optimize_portfolio,
     "compute_portfolio_metrics": compute_portfolio_metrics,
     "synthesize_conviction": synthesize_conviction,
+    "find_cointegrated_pairs": find_cointegrated_pairs,
+    "compute_spread_metrics": compute_spread_metrics,
+    "analyze_earnings_impact": analyze_earnings_impact,
 }
 
 

@@ -196,6 +196,33 @@ class YFinanceProvider(AbstractDataProvider):
             )
         return results
 
+    async def get_earnings_history(self, symbol: str, quarters: int = 8) -> list[dict]:
+        """Fetch past earnings events via ticker.earnings_dates."""
+        ticker = yf.Ticker(symbol.upper())
+        dates: pd.DataFrame | None = await asyncio.to_thread(
+            lambda: ticker.earnings_dates
+        )
+        if dates is None or dates.empty:
+            return []
+        now = datetime.now(UTC)
+        results = []
+        for idx, row in dates.iterrows():
+            event_at = pd.Timestamp(str(idx))
+            event_at = event_at.tz_localize(UTC) if event_at.tz is None else event_at.tz_convert(UTC)
+            if event_at >= now:
+                continue
+            results.append(
+                {
+                    "date": event_at.date().isoformat(),
+                    "eps_estimate": _float_or_none(row.get("EPS Estimate")),
+                    "eps_actual": _float_or_none(row.get("Reported EPS")),
+                    "surprise_pct": _float_or_none(row.get("Surprise(%)")),
+                }
+            )
+            if len(results) >= quarters:
+                break
+        return results
+
     async def get_sector_performance(self) -> dict:
         """Compute sector performance from Sector SPDR ETFs."""
         results: dict[str, dict] = {}
@@ -309,6 +336,16 @@ def _normalize_ohlcv_frame(frame: pd.DataFrame) -> pd.DataFrame | None:
     result.index = index.tz_localize(UTC) if index.tz is None else index.tz_convert(UTC)
     result.index.name = "Date"
     return result
+
+
+def _float_or_none(value: object) -> float | None:
+    """Coerce a possibly-NaN cell to float or None."""
+    if value is None or (isinstance(value, float) and pd.isna(value)):
+        return None
+    try:
+        return round(float(value), 4)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return None
 
 
 def _pct_change(series: pd.Series, periods: int) -> float | None:

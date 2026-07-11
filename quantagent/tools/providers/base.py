@@ -59,6 +59,15 @@ class AbstractDataProvider(ABC):
         """
         return {"symbol": symbol, "sector": None, "industry": None}
 
+    async def get_earnings_history(self, symbol: str, quarters: int = 8) -> list[dict]:
+        """Past earnings events, most recent first.
+
+        Returns [{date, eps_estimate, eps_actual, surprise_pct}].
+        Default implementation reports no history; providers with
+        earnings data should override.
+        """
+        return []
+
     async def get_batch_ohlcv(
         self, symbols: list[str], period: str = "1y", interval: str = "1d"
     ) -> dict[str, pd.DataFrame]:

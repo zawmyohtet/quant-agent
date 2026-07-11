@@ -85,3 +85,7 @@ async def test_industry_classification_default_unavailable() -> None:
     provider = MockProvider()
     result = await provider.get_industry_classification("AAPL")
     assert result == {"symbol": "AAPL", "sector": None, "industry": None}
+
+
+async def test_earnings_history_default_empty() -> None:
+    assert await MockProvider().get_earnings_history("AAPL") == []

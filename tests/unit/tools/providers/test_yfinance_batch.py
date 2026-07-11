@@ -71,6 +71,45 @@ def test_normalize_rejects_non_ohlcv_frame() -> None:
     assert _normalize_ohlcv_frame(frame) is None
 
 
+async def test_earnings_history_from_earnings_dates(monkeypatch) -> None:
+    import quantagent.tools.providers.yfinance_provider as mod
+
+    dates = pd.DatetimeIndex(
+        ["2030-01-15", "2026-04-30", "2026-01-30"], tz="America/New_York"
+    )
+    frame = pd.DataFrame(
+        {
+            "EPS Estimate": [2.0, 1.5, 1.4],
+            "Reported EPS": [float("nan"), 1.6, 1.3],
+            "Surprise(%)": [float("nan"), 6.67, -7.14],
+        },
+        index=dates,
+    )
+
+    class _FakeTicker:
+        def __init__(self, symbol: str) -> None:
+            self.earnings_dates = frame
+
+    monkeypatch.setattr(mod.yf, "Ticker", _FakeTicker)
+    provider = mod.YFinanceProvider()
+    history = await provider.get_earnings_history("AAPL", quarters=8)
+    # The 2030 future event is excluded; past events keep their EPS data.
+    assert [h["date"] for h in history] == ["2026-04-30", "2026-01-30"]
+    assert history[0]["eps_actual"] == 1.6
+    assert history[1]["surprise_pct"] == -7.14
+
+
+async def test_earnings_history_empty(monkeypatch) -> None:
+    import quantagent.tools.providers.yfinance_provider as mod
+
+    class _FakeTicker:
+        def __init__(self, symbol: str) -> None:
+            self.earnings_dates = None
+
+    monkeypatch.setattr(mod.yf, "Ticker", _FakeTicker)
+    assert await mod.YFinanceProvider().get_earnings_history("AAPL") == []
+
+
 async def test_industry_classification_reads_info(monkeypatch) -> None:
     import quantagent.tools.providers.yfinance_provider as mod
 
