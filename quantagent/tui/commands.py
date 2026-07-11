@@ -186,6 +186,14 @@ async def _handle_sector(args: list[str], app: QuantAgentApp) -> None:
     )
 
 
+async def _handle_heatmap(args: list[str], app: QuantAgentApp) -> None:
+    metric = args[0] if args else "performance"
+    await app._submit_user_message(
+        f"Generate a market heatmap by sector using the {metric} metric "
+        "and summarize what stands out."
+    )
+
+
 async def _handle_compare(args: list[str], app: QuantAgentApp) -> None:
     if len(args) < 2:
         _system(app, "Usage: /compare <SYM1> <SYM2> ...")
@@ -257,6 +265,12 @@ REGISTRY: list[SlashCommand] = [
         "/sector [name]",
         "Sector analysis (all sectors, or one by name).",
         _handle_sector,
+    ),
+    SlashCommand(
+        "heatmap",
+        "/heatmap [metric]",
+        "Market heatmap (performance/volume/volatility/rsi).",
+        _handle_heatmap,
     ),
     SlashCommand(
         "compare",

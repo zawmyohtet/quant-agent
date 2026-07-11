@@ -3,13 +3,21 @@ from __future__ import annotations
 
 import numpy as np
 import pandas as pd
+import pytest
 from _synthetic import SyntheticProvider, make_ohlcv, trend_close
 
+from quantagent.tools import breadth_store as breadth_store_mod
 from quantagent.tools.market_breadth import (
     _CROSS_ASSET_TICKERS,
     _pct_above,
     _regime_from_score,
+    _sentiment_label,
+    _thrust_signal,
     _vix_score,
+    compute_advance_decline,
+    compute_breadth_thrust,
+    compute_market_sentiment,
+    compute_new_highs_lows,
     compute_percent_above_ma,
     count_distribution_days,
     detect_follow_through_day,
@@ -194,3 +202,118 @@ def test_cross_asset_tickers_complete() -> None:
     assert set(_CROSS_ASSET_TICKERS.values()) == {
         "SPY", "RSP", "IWM", "XLY", "XLP", "TLT", "HYG", "LQD",
     }
+
+
+# ── Deep-path breadth (universe store) ───────────────────────────────────────
+
+
+def _mixed_universe_provider(monkeypatch: pytest.MonkeyPatch) -> SyntheticProvider:
+    """Fake sp500 universe of 6 rising + 5 falling symbols (+ ETF proxies)."""
+    symbols = [f"S{i}" for i in range(11)]
+    monkeypatch.setattr(breadth_store_mod, "builtin_universe_symbols", lambda name: symbols)
+    frames = {
+        sym: make_ohlcv(trend_close(n=300, drift=0.002 if i < 6 else -0.002))
+        for i, sym in enumerate(symbols)
+    }
+    for i, etf in enumerate(SECTOR_ETFS.values()):
+        frames[etf] = make_ohlcv(trend_close(n=300, drift=0.001, seed=i))
+    return SyntheticProvider(frames)
+
+
+async def test_advance_decline_counts(monkeypatch: pytest.MonkeyPatch) -> None:
+    provider = _mixed_universe_provider(monkeypatch)
+    df = await compute_advance_decline(provider, universe="sp500", period="1m")
+    assert len(df) == 21
+    assert (df["Advancing"] == 6).all()
+    assert (df["Declining"] == 5).all()
+    assert (df["NetAdvancing"] == 1).all()
+    assert df["ADLine"].is_monotonic_increasing
+
+
+async def test_new_highs_lows_counts(monkeypatch: pytest.MonkeyPatch) -> None:
+    provider = _mixed_universe_provider(monkeypatch)
+    df = await compute_new_highs_lows(provider, universe="sp500", period="1m")
+    assert (df["NewHighs"] == 6).all()
+    assert (df["NewLows"] == 5).all()
+    assert (df["NetNewHighs"] == 1).all()
+    assert df["HighLowRatio"].iloc[-1] == round(6 / 11, 4)
+
+
+async def test_breadth_thrust_turns_bullish(monkeypatch: pytest.MonkeyPatch) -> None:
+    symbols = [f"S{i}" for i in range(11)]
+    monkeypatch.setattr(breadth_store_mod, "builtin_universe_symbols", lambda name: symbols)
+    # All symbols decline for 270 sessions, then rally for the last 30.
+    close = list(trend_close(n=270, drift=-0.001)) + list(
+        trend_close(n=30, drift=0.003, start=76.0)
+    )
+    frames = {sym: make_ohlcv([c * (1 + i * 0.01) for c in close]) for i, sym in enumerate(symbols)}
+    provider = SyntheticProvider(frames)
+    result = await compute_breadth_thrust(provider, universe="sp500", period="3m")
+    assert result["thrust_value"] > 50
+    assert result["thrust_signal"] == "bullish"
+    assert not result["history"].empty
+
+
+def test_thrust_signal_bands() -> None:
+    assert _thrust_signal(80.0) == "bullish"
+    assert _thrust_signal(-80.0) == "bearish"
+    assert _thrust_signal(0.0) == "neutral"
+
+
+async def test_percent_above_ma_deep_path(monkeypatch: pytest.MonkeyPatch) -> None:
+    provider = _mixed_universe_provider(monkeypatch)
+    result = await compute_percent_above_ma(provider, universe="sp500", allow_warmup=True)
+    assert result["proxy"] is False
+    assert result["n_symbols"] == 11
+    assert result["pct_above"][50] == round(6 / 11 * 100, 2)
+
+
+async def test_regime_uses_warm_universe_store(monkeypatch: pytest.MonkeyPatch) -> None:
+    provider = _mixed_universe_provider(monkeypatch)
+    frames = _regime_frames(bullish=True)
+    provider.frames.update(frames)
+    # Warm the sp500 store first, then regime should report the universe source.
+    await compute_percent_above_ma(provider, universe="sp500", allow_warmup=True)
+    result = await detect_market_regime(provider, universe="sp500")
+    assert result["components"]["breadth_source"] == "universe:sp500"
+
+
+# ── Sentiment ────────────────────────────────────────────────────────────────
+
+
+def _sentiment_provider(bullish: bool) -> SyntheticProvider:
+    frames = _regime_frames(bullish=bullish)
+    frames["^VIX3M"] = make_ohlcv(np.full(80, 17.0 if bullish else 30.0))
+    return SyntheticProvider(frames)
+
+
+async def test_sentiment_bullish() -> None:
+    result = await compute_market_sentiment(_sentiment_provider(bullish=True))
+    assert result["score"] > 20
+    assert result["label"] in {"greed", "extreme-greed"}
+    assert result["components"]["vix_term_structure"] == "contango"
+    assert result["components"]["put_call_ratio"] is None
+
+
+async def test_sentiment_bearish() -> None:
+    result = await compute_market_sentiment(_sentiment_provider(bullish=False))
+    assert result["score"] < -20
+    assert result["label"] in {"fear", "extreme-fear"}
+    assert result["components"]["vix_term_structure"] == "backwardation"
+
+
+async def test_sentiment_survives_missing_series() -> None:
+    frames = _regime_frames(bullish=True)
+    del frames["^VIX"]
+    result = await compute_market_sentiment(SyntheticProvider(frames))
+    assert result["components"]["vix_level"] is None
+    assert result["components"]["vix_term_structure"] is None
+    assert isinstance(result["score"], float)
+
+
+def test_sentiment_label_bands() -> None:
+    assert _sentiment_label(75.0) == "extreme-greed"
+    assert _sentiment_label(30.0) == "greed"
+    assert _sentiment_label(0.0) == "neutral"
+    assert _sentiment_label(-30.0) == "fear"
+    assert _sentiment_label(-75.0) == "extreme-fear"

@@ -118,7 +118,7 @@ async def get_industry_performance(
         from quantagent.tools.screener import _fetch_universe_tickers
 
         symbols = _fetch_universe_tickers("sp500")
-    classifications = await _classify_symbols(provider, symbols)
+    classifications = await classify_symbols(provider, symbols)
     members = [
         s for s, c in classifications.items()
         if (c.get("sector") or "").lower() == sector.lower() and c.get("industry")
@@ -129,7 +129,7 @@ async def get_industry_performance(
     return _aggregate_industry_returns(frames, classifications)
 
 
-async def _classify_symbols(
+async def classify_symbols(
     provider: AbstractDataProvider, symbols: list[str]
 ) -> dict[str, dict]:
     """Classify symbols into sector/industry with caching and bounded concurrency."""

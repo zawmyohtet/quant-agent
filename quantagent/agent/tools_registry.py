@@ -10,6 +10,7 @@ from typing import Any
 from langchain.tools import tool
 
 from quantagent.tools.backtesting import BacktestConfig, format_backtest_result, run_backtest
+from quantagent.tools.breadth_store import BreadthStore
 from quantagent.tools.fundamental import (
     compute_dcf,
     peer_comparison,
@@ -17,6 +18,11 @@ from quantagent.tools.fundamental import (
     score_piotroski_f,
 )
 from quantagent.tools.market_breadth import (
+    compute_advance_decline,
+    compute_breadth_thrust,
+    compute_market_sentiment,
+    compute_new_highs_lows,
+    compute_percent_above_ma,
     count_distribution_days,
     detect_follow_through_day,
     detect_market_regime,
@@ -31,7 +37,12 @@ from quantagent.tools.market_data import (
     get_sector_performance,
     search_symbols,
 )
-from quantagent.tools.market_overview import get_market_summary
+from quantagent.tools.market_overview import (
+    generate_market_heatmap,
+    get_market_summary,
+    get_most_active,
+    get_top_movers,
+)
 from quantagent.tools.portfolio import (
     compute_portfolio_metrics,
     monte_carlo_simulation,
@@ -58,6 +69,8 @@ _TOOL_TIMEOUT_SEC = 30
 # Universe-scale operations (screening, breadth) may fetch data for hundreds
 # of symbols on a cold cache and need more headroom than the default.
 _LONG_TOOL_TIMEOUT_SEC = 120
+# Explicit whole-universe cache warm-up is allowed to run for minutes.
+_WARMUP_TIMEOUT_SEC = 600
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -504,6 +517,220 @@ async def _get_market_summary(provider: Any) -> str:
     return _json_dumps(result)
 
 
+async def _warm_breadth_cache(provider: Any, universe: str = "sp500") -> str:
+    """Warm the universe breadth cache (one-time, slow — up to 10 minutes).
+
+    Downloads ~1 year of daily data for every universe member into the
+    local breadth store. Run this once before universe-level breadth
+    tools (advance/decline, new highs/lows, breadth thrust, top movers);
+    afterwards they update incrementally and respond in seconds.
+
+    Args:
+        universe: Universe to warm — sp500, nasdaq100, sector_etfs.
+    """
+    store = BreadthStore()
+    result = await _with_timeout(
+        store.warm_up(provider, universe), timeout=_WARMUP_TIMEOUT_SEC
+    )
+    return _json_dumps(result)
+
+
+def _history_payload(df: Any, tail: int = 10) -> str:
+    """Serialize a breadth history frame as latest values + recent tail."""
+    if df.empty:
+        return _json_dumps({"error": "no data — warm the breadth cache first"})
+    records = json.loads(df.tail(tail).to_json(orient="index", date_format="iso"))
+    return _json_dumps({"latest": df.iloc[-1].to_dict(), "recent": records})
+
+
+async def _compute_advance_decline(
+    provider: Any, universe: str = "sp500", period: str = "3m"
+) -> str:
+    """Compute the advance/decline line for a universe.
+
+    Requires a warm breadth cache (see warm_breadth_cache); warms it
+    automatically on first use, which is slow.
+
+    Args:
+        universe: Universe name — sp500, nasdaq100, sector_etfs.
+        period: History window — 1m, 3m, 6m, 1y.
+    """
+    df = await _with_timeout(
+        compute_advance_decline(provider, universe=universe, period=period),
+        timeout=_WARMUP_TIMEOUT_SEC,
+    )
+    return _history_payload(df)
+
+
+async def _compute_new_highs_lows(
+    provider: Any, universe: str = "sp500", period: str = "3m"
+) -> str:
+    """Count daily new 52-week highs and lows for a universe.
+
+    Requires a warm breadth cache; warms it automatically on first use.
+
+    Args:
+        universe: Universe name — sp500, nasdaq100, sector_etfs.
+        period: History window — 1m, 3m, 6m, 1y.
+    """
+    df = await _with_timeout(
+        compute_new_highs_lows(provider, universe=universe, period=period),
+        timeout=_WARMUP_TIMEOUT_SEC,
+    )
+    return _history_payload(df)
+
+
+async def _compute_breadth_thrust(
+    provider: Any, universe: str = "sp500", period: str = "3m"
+) -> str:
+    """Compute the McClellan-style breadth oscillator for a universe.
+
+    Above +50 = bullish thrust, below -50 = bearish. Requires a warm
+    breadth cache; warms it automatically on first use.
+
+    Args:
+        universe: Universe name — sp500, nasdaq100, sector_etfs.
+        period: History window — 1m, 3m, 6m, 1y.
+    """
+    result = await _with_timeout(
+        compute_breadth_thrust(provider, universe=universe, period=period),
+        timeout=_WARMUP_TIMEOUT_SEC,
+    )
+    history = result.pop("history")
+    recent = (
+        json.loads(history.tail(10).to_json(orient="index", date_format="iso"))
+        if not history.empty
+        else {}
+    )
+    return _json_dumps({**result, "recent": recent})
+
+
+async def _compute_percent_above_ma(provider: Any, universe: str = "sector_etfs") -> str:
+    """Percent of universe members above their 20/50/200-day moving averages.
+
+    sector_etfs answers instantly; sp500/nasdaq100 use the breadth cache
+    and fall back to a sector-ETF proxy (flagged) when the cache is cold.
+
+    Args:
+        universe: Universe name — sector_etfs, sp500, nasdaq100.
+    """
+    result = await _with_timeout(
+        compute_percent_above_ma(provider, universe=universe, allow_warmup=False)
+    )
+    return _json_dumps(result)
+
+
+async def _compute_market_sentiment(provider: Any) -> str:
+    """Composite market sentiment score from -100 (fear) to +100 (greed).
+
+    Combines VIX level, VIX term structure, sector breadth, and index
+    momentum. Put/call ratio is unavailable and reported as null.
+    """
+    result = await _with_timeout(compute_market_sentiment(provider))
+    return _json_dumps(result)
+
+
+async def _get_top_movers(
+    provider: Any,
+    universe: str = "sp500",
+    direction: str = "up",
+    count: int = 10,
+    period: str = "1d",
+) -> str:
+    """Top gainers or losers in a universe.
+
+    Requires a warm breadth cache; warms it automatically on first use.
+
+    Args:
+        universe: Universe name — sp500, nasdaq100, sector_etfs.
+        direction: "up" for gainers, "down" for losers.
+        count: Number of symbols to return.
+        period: Change window — 1d, 1w, 1m.
+    """
+    df = await _with_timeout(
+        get_top_movers(provider, universe=universe, direction=direction,
+                       count=count, period=period),
+        timeout=_WARMUP_TIMEOUT_SEC,
+    )
+    if df.empty:
+        return "No mover data available."
+    return str(df.to_json(orient="records", indent=2))
+
+
+async def _get_most_active(
+    provider: Any, universe: str = "sp500", count: int = 10
+) -> str:
+    """Most active stocks by volume vs their 20-day average.
+
+    Requires a warm breadth cache; warms it automatically on first use.
+
+    Args:
+        universe: Universe name — sp500, nasdaq100, sector_etfs.
+        count: Number of symbols to return.
+    """
+    df = await _with_timeout(
+        get_most_active(provider, universe=universe, count=count),
+        timeout=_WARMUP_TIMEOUT_SEC,
+    )
+    if df.empty:
+        return "No volume data available."
+    return str(df.to_json(orient="records", indent=2))
+
+
+async def _generate_market_heatmap(
+    provider: Any,
+    universe: str = "sp500",
+    metric: str = "performance",
+    group_by: str = "sector",
+) -> str:
+    """Market heatmap grouped by sector, summarized per group.
+
+    Requires a warm breadth cache and symbol classifications (both
+    cached). Returns per-group mean metric, symbol count, and the
+    largest members by dollar volume.
+
+    Args:
+        universe: Universe name — sp500, nasdaq100.
+        metric: performance | volume | volatility | rsi.
+        group_by: "sector" or "industry".
+    """
+    result = await _with_timeout(
+        generate_market_heatmap(provider, universe=universe, metric=metric,
+                                group_by=group_by),
+        timeout=_WARMUP_TIMEOUT_SEC,
+    )
+    return _json_dumps(_summarize_heatmap(result))
+
+
+def _summarize_heatmap(result: dict) -> dict:
+    """Reduce a full heatmap to per-group summaries digestible by the LLM."""
+    summary = {}
+    for group, members in result.get("groups", {}).items():
+        cells = _flatten_cells(members)
+        if not cells:
+            continue
+        values = [c["value"] for _, c in cells]
+        largest = sorted(cells, key=lambda kv: kv[1]["size"] or 0, reverse=True)[:3]
+        summary[group] = {
+            "n_symbols": len(cells),
+            "mean_value": round(sum(values) / len(values), 4),
+            "largest": [{"symbol": s, "value": c["value"]} for s, c in largest],
+        }
+    return {"metric": result.get("metric"), "group_by": result.get("group_by"),
+            "groups": summary}
+
+
+def _flatten_cells(members: dict) -> list[tuple[str, dict]]:
+    """Flatten one heatmap group ({sym: cell} or {industry: {sym: cell}})."""
+    cells: list[tuple[str, dict]] = []
+    for key, value in members.items():
+        if isinstance(value, dict) and "value" in value:
+            cells.append((key, value))
+        elif isinstance(value, dict):
+            cells.extend(_flatten_cells(value))
+    return cells
+
+
 # ── Registry builder ─────────────────────────────────────────────────────────
 
 
@@ -536,6 +763,15 @@ def build_tool_registry(config: QuantAgentConfig) -> list[Any]:
         _bind_provider(_detect_follow_through_day, provider),
         _bind_provider(_detect_market_regime, provider),
         _bind_provider(_get_market_summary, provider),
+        _bind_provider(_warm_breadth_cache, provider),
+        _bind_provider(_compute_advance_decline, provider),
+        _bind_provider(_compute_new_highs_lows, provider),
+        _bind_provider(_compute_breadth_thrust, provider),
+        _bind_provider(_compute_percent_above_ma, provider),
+        _bind_provider(_compute_market_sentiment, provider),
+        _bind_provider(_get_top_movers, provider),
+        _bind_provider(_get_most_active, provider),
+        _bind_provider(_generate_market_heatmap, provider),
         compute_dcf_valuation,
         compute_piotroski_score,
         compute_altman_z,
