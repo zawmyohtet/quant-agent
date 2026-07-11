@@ -542,6 +542,11 @@ def _regime_from_score(composite: float) -> tuple[str, dict]:
     return "strong-bear", _REGIME_BANDS[-1][2]
 
 
+def exposure_band(score: float) -> dict:
+    """Recommended equity-exposure band for a 0-100 composite score."""
+    return _regime_from_score(score)[1]
+
+
 _SENTIMENT_LABELS: list[tuple[float, str]] = [
     (60.0, "extreme-greed"),
     (20.0, "greed"),

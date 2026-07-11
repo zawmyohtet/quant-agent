@@ -13,6 +13,7 @@ from langchain.tools import tool
 from quantagent.tools._paths import reports_dir
 from quantagent.tools.backtesting import BacktestConfig, format_backtest_result, run_backtest
 from quantagent.tools.breadth_store import BreadthStore
+from quantagent.tools.conviction import synthesize_conviction
 from quantagent.tools.fundamental import (
     compute_dcf,
     peer_comparison,
@@ -87,6 +88,7 @@ from quantagent.tools.universe import (
     get_universe_metadata,
     list_universes,
 )
+from quantagent.tools.workflows import get_workflow, list_workflows, run_workflow
 from quantagent.tui.config import QuantAgentConfig
 
 logger = logging.getLogger(__name__)
@@ -699,6 +701,63 @@ async def _delete_universe_tool(provider: Any, name: str) -> str:
     return f"Universe '{name}' deleted."
 
 
+async def _synthesize_conviction_tool(provider: Any) -> str:
+    """Synthesize a 0-100 market conviction score with exposure guidance.
+
+    Fuses market regime, breadth, timing signals (distribution days,
+    follow-through day), sector rotation, and sentiment, with a bonus
+    for signal convergence. Returns the score, a stance
+    (aggressive/constructive/selective/defensive/risk-off), a
+    recommended equity exposure band, per-component breakdown, and key
+    risks. Use this to answer "how bullish should I be right now?".
+    """
+    result = await _with_timeout(
+        synthesize_conviction(provider), timeout=_LONG_TOOL_TIMEOUT_SEC
+    )
+    return _json_dumps(result)
+
+
+def _serialize_step_value(value: Any) -> Any:
+    if hasattr(value, "to_dict") and hasattr(value, "columns"):  # DataFrame
+        return json.loads(value.head(10).to_json(orient="records"))
+    return value
+
+
+async def _list_workflows_tool(provider: Any) -> str:
+    """List available analysis workflows (built-in and custom)."""
+    return _json_dumps(list_workflows())
+
+
+async def _run_workflow_tool(provider: Any, name: str, target: str = "") -> str:
+    """Run a predefined analysis workflow and return all step results.
+
+    Built-in workflows: daily_market_check, weekly_sector_review,
+    stock_research (target = symbol), screening_pipeline,
+    portfolio_rebalance_review (target = comma-separated symbols).
+    Custom workflows come from ~/.quantagent/workflows/<name>.yaml.
+
+    Args:
+        name: Workflow name (see list_workflows_tool).
+        target: Required for stock_research and portfolio_rebalance_review.
+    """
+    workflow = get_workflow(name, target=target)
+    result = await _with_timeout(
+        run_workflow(provider, workflow), timeout=_WARMUP_TIMEOUT_SEC
+    )
+    payload = {
+        "workflow": result.workflow_name,
+        "summary": result.summary,
+        "results": {
+            key: _serialize_step_value(value)
+            for key, value in result.step_results.items()
+        },
+    }
+    text = _json_dumps(payload)
+    if len(text) > 12_000:
+        text = text[:12_000] + "\n... [truncated]"
+    return text
+
+
 async def _build_report(
     provider: Any, report_type: str, target: str, criteria: str, universe: str
 ) -> Report:
@@ -1023,6 +1082,9 @@ def build_tool_registry(config: QuantAgentConfig) -> list[Any]:
         _bind_provider(_create_universe_tool, provider),
         _bind_provider(_delete_universe_tool, provider),
         _bind_provider(_generate_report_tool, provider),
+        _bind_provider(_synthesize_conviction_tool, provider),
+        _bind_provider(_list_workflows_tool, provider),
+        _bind_provider(_run_workflow_tool, provider),
         compute_dcf_valuation,
         compute_piotroski_score,
         compute_altman_z,

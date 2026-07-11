@@ -186,6 +186,24 @@ async def _handle_sector(args: list[str], app: QuantAgentApp) -> None:
     )
 
 
+async def _handle_workflow(args: list[str], app: QuantAgentApp) -> None:
+    if not args:
+        _system(app, "Usage: /workflow <name> [target]")
+        return
+    name = args[0]
+    target = " ".join(args[1:])
+    detail = f" with target {target}" if target else ""
+    await app._submit_user_message(
+        f"Run the '{name}' workflow{detail} and walk me through the results."
+    )
+
+
+async def _handle_workflows(args: list[str], app: QuantAgentApp) -> None:
+    await app._submit_user_message(
+        "List the available analysis workflows and what each one does."
+    )
+
+
 async def _handle_report(args: list[str], app: QuantAgentApp) -> None:
     if not args:
         _system(app, "Usage: /report <market|sector|stock|portfolio|screening> [target]")
@@ -307,6 +325,12 @@ REGISTRY: list[SlashCommand] = [
         "/report <type> [target]",
         "Generate a report (market/sector/stock/portfolio/screening).",
         _handle_report,
+    ),
+    SlashCommand(
+        "workflow", "/workflow <name> [target]", "Run a predefined workflow.", _handle_workflow
+    ),
+    SlashCommand(
+        "workflows", "/workflows", "List available workflows.", _handle_workflows
     ),
     SlashCommand(
         "universe", "/universe <name>", "Switch active screening universe.", _handle_universe
