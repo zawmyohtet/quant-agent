@@ -17,7 +17,11 @@ QuantAgent is a terminal UI application that lets you chat with an AI agent to a
 - **Fundamental Analysis** — DCF valuation, Piotroski F-Score, Altman Z-Score, peer comparison, Magic Formula ranking.
 - **Backtesting** — Built-in strategies (SMA/EMA crossover, RSI mean reversion, MACD momentum, Bollinger breakout) with Sharpe, drawdown, win rate, and walk-forward validation.
 - **Portfolio Tools** — Optimize weights (max Sharpe, min vol, risk parity, equal weight), compute risk metrics (beta, VaR, CVaR), and run Monte Carlo simulations.
-- **Stock Screener** — Filter S&P 500 and Nasdaq-100 by fundamentals and technicals.
+- **Stock Screener** — Filter S&P 500, Nasdaq-100, Dow 30, or custom universes by fundamentals and technicals, plus pattern screens (Minervini VCP, 52-week-high breakouts, oversold reversals).
+- **Market Analysis** — Market regime detection (cross-asset ratios + breadth) with recommended equity-exposure bands, sector rotation and relative strength, distribution-day / Follow-Through-Day timing signals, universe-wide breadth (A/D line, new highs/lows, breadth thrust), sentiment, and a conviction synthesizer that fuses it all into one score (`/market`, `/sector`, `/heatmap`).
+- **Pair Trading & Earnings Events** — Cointegration scanning with hedge ratio, z-score, and half-life spread metrics; historical earnings-reaction analysis (gap, day-1 move, post-earnings drift) and universe earnings calendars.
+- **Reports & Workflows** — Generate Markdown/HTML market, sector, stock, portfolio, and screening reports (`/report`); run multi-step analysis workflows, including custom YAML workflows (`/workflow`).
+- **Trade Journal & Risk Discipline** — Forward-only trade journal with MAE/MFE capture (`/journal`), drawdown circuit breaker, and a pre-trade discipline gate (`/riskgate`).
 - **Human-in-the-Loop** — Approve sensitive actions like backtests and portfolio optimization before they run.
 
 ## ⚠️ Important Disclaimer

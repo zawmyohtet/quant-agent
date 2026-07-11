@@ -977,11 +977,11 @@ async def check_discipline_gate(
 
 ### 10.1 New Data Providers
 
-| Provider | Key Required | Best For |
-|---|---|---|
-| **FMP** (Financial Modeling Prep) | Yes | Fundamentals, screeners, batch data, Russell 2000 constituents |
-| **Alpaca** | Yes | Portfolio integration (read-only positions) |
-| **FINVIZ** | No (scraping) | Screening, sentiment |
+| Provider | Key Required | Best For | Status |
+|---|---|---|---|
+| **FMP** (Financial Modeling Prep) | Yes | Fundamentals (real Piotroski), economic calendar, batch data, constituents | Deferred — no API key yet |
+| **Alpaca** | Yes | Portfolio integration (read-only positions) | Deferred — needs broker account |
+| **FINVIZ** | No (scraping) | Screening, sentiment | Dropped — fragile scraping, ToS risk; local screener covers it |
 
 Adding FMP or Polygon-backed constituents is the trigger to reintroduce `russell2000` as a screening universe (§6.2).
 
@@ -1173,79 +1173,83 @@ All new code follows AGENTS.md: `from __future__ import annotations`, full type 
 
 ### Milestone 0: Prerequisites & Fixes (Days 1-4)
 
-- [ ] Fix RSI screening no-op, `buy_and_hold` gap, `russell2000` phantom universe
-- [ ] Add `tests/unit/tools/test_screener.py` baseline tests
-- [ ] Implement `tools/_paths.py`
-- [ ] Implement `DataCache` (`tools/cache.py`)
-- [ ] Add `get_batch_ohlcv` / `get_batch_quotes` (base defaults + yfinance batch impl)
-- [ ] Retrofit `portfolio.py::_fetch_prices` and screener fetch onto batch methods
-- [ ] Add per-tool timeout override in `agent/tools_registry.py`
+- [x] Fix RSI screening no-op, `buy_and_hold` gap, `russell2000` phantom universe
+- [x] Add `tests/unit/tools/test_screener.py` baseline tests
+- [x] Implement `tools/_paths.py`
+- [x] Implement `DataCache` (`tools/cache.py`)
+- [x] Add `get_batch_ohlcv` / `get_batch_quotes` (base defaults + yfinance batch impl)
+- [x] Retrofit `portfolio.py::_fetch_prices` and screener fetch onto batch methods
+- [x] Add per-tool timeout override in `agent/tools_registry.py`
 
 ### Milestone 1: Market Fast Path (Week 1-2)
 
-- [ ] Implement `sector_analysis.py` (all functions)
-- [ ] Implement `market_breadth.py` fast path: distribution days, FTD, ETF-proxy % above MA
-- [ ] Implement `detect_market_regime` (cross-asset ratios + ETF proxies) with `recommended_exposure`
-- [ ] Implement `market_overview.py::get_market_summary` (fast path only)
-- [ ] Extend providers with `get_industry_classification`
-- [ ] Add `market-regime` and `sector-rotation` skills
-- [ ] Add `/market` and `/sector` TUI commands
-- [ ] Unit tests for all new tools (85%+ coverage)
+- [x] Implement `sector_analysis.py` (all functions)
+- [x] Implement `market_breadth.py` fast path: distribution days, FTD, ETF-proxy % above MA
+- [x] Implement `detect_market_regime` (cross-asset ratios + ETF proxies) with `recommended_exposure`
+- [x] Implement `market_overview.py::get_market_summary` (fast path only)
+- [x] Extend providers with `get_industry_classification`
+- [x] Add `market-regime` and `sector-rotation` skills
+- [x] Add `/market` and `/sector` TUI commands
+- [x] Unit tests for all new tools (85%+ coverage)
 
 ### Milestone 2: Universe Breadth (Deep Path) (Week 3)
 
-- [ ] Incremental breadth store (`~/.quantagent/cache/breadth.db`) + warm-up task
-- [ ] `compute_advance_decline`, `compute_new_highs_lows`, `compute_percent_above_ma` (universe), `compute_breadth_thrust`
-- [ ] Wire deep-path breadth into `detect_market_regime` when cache is warm
-- [ ] `compute_market_sentiment`, remaining `market_overview.py` functions
-- [ ] Add `market-breadth` skill
-- [ ] Unit tests
+- [x] Incremental breadth store (`~/.quantagent/cache/breadth.db`) + warm-up task
+- [x] `compute_advance_decline`, `compute_new_highs_lows`, `compute_percent_above_ma` (universe), `compute_breadth_thrust`
+- [x] Wire deep-path breadth into `detect_market_regime` when cache is warm
+- [x] `compute_market_sentiment`, remaining `market_overview.py` functions
+- [x] Add `market-breadth` skill
+- [x] Unit tests
 
 ### Milestone 3: Advanced Screening (Week 4)
 
-- [ ] Lift 100-symbol cap; batch-fetch screening rows
-- [ ] Extend `screener.py` with new screening functions
-- [ ] Implement `universe.py` (custom universe support; move Wikipedia scraping here)
-- [ ] Add `advanced-screening` skill
-- [ ] Extend `/screen` command with new syntax
-- [ ] Add `/universe` and `/universes` commands
-- [ ] Unit tests for all new screening functions
+- [x] Lift 100-symbol cap; batch-fetch screening rows
+- [x] Extend `screener.py` with new screening functions
+- [x] Implement `universe.py` (custom universe support; move Wikipedia scraping here)
+- [x] Add `advanced-screening` skill
+- [x] Extend `/screen` command with new syntax
+- [x] Add `/universe` and `/universes` commands
+- [x] Unit tests for all new screening functions
 
 ### Milestone 4: Reports (Week 5-6)
 
-- [ ] Add `jinja2` dependency; implement report framework (`reports/base.py`)
-- [ ] Implement all report generators
-- [ ] Create Jinja2 templates for each report type
-- [ ] Implement export functions (Markdown, HTML; PDF as optional extra)
-- [ ] Add `report-generation` skill
-- [ ] Add `/report` command
-- [ ] Unit tests for report generation
+- [x] Add `jinja2` dependency; implement report framework (`reports/base.py`)
+- [x] Implement all report generators
+- [x] Create Jinja2 templates for each report type
+- [x] Implement export functions (Markdown, HTML; PDF as optional extra)
+- [x] Add `report-generation` skill
+- [x] Add `/report` command
+- [x] Unit tests for report generation
 
 ### Milestone 5: Workflows & Conviction (Week 7)
 
-- [ ] Add `pyyaml` dependency; implement `workflows.py` (workflow engine)
-- [ ] Define all built-in workflows
-- [ ] Implement `conviction.py` synthesizer; wire as `daily_market_check` capstone
-- [ ] Support custom workflow YAML loading
-- [ ] Add `/workflow` and `/workflows` commands
-- [ ] Unit tests for workflow execution and conviction scoring
+- [x] Add `pyyaml` dependency; implement `workflows.py` (workflow engine)
+- [x] Define all built-in workflows
+- [x] Implement `conviction.py` synthesizer; wire as `daily_market_check` capstone
+- [x] Support custom workflow YAML loading
+- [x] Add `/workflow` and `/workflows` commands
+- [x] Unit tests for workflow execution and conviction scoring
 
 ### Milestone 6: Trade Journal & Risk Discipline (Week 8)
 
-- [ ] Implement `trade_journal.py` (forward-only lifecycle, MAE/MFE)
-- [ ] Create SQLite schema for trades
-- [ ] Implement `risk_gate.py` (circuit breaker + discipline gate)
-- [ ] Add `exposure-discipline` skill
-- [ ] Add `/journal` and `/riskgate` commands
-- [ ] Unit tests
+- [x] Implement `trade_journal.py` (forward-only lifecycle, MAE/MFE)
+- [x] Create SQLite schema for trades
+- [x] Implement `risk_gate.py` (circuit breaker + discipline gate)
+- [x] Add `exposure-discipline` skill
+- [x] Add `/journal` and `/riskgate` commands
+- [x] Unit tests
 
 ### Milestone 7: Polish & Advanced (Week 9+)
 
-- [ ] Pair trading module
-- [ ] Event analysis module
-- [ ] Additional data providers (FMP, Alpaca); reintroduce `russell2000` behind them
-- [ ] Performance optimization (batch fetching, caching)
-- [ ] Documentation updates
+- [x] Pair trading module (`tools/pair_trading.py` — cointegration scan + spread metrics)
+- [x] Event analysis module (`tools/event_analysis.py` — earnings impact + calendar range)
+- [x] Performance optimization (batch fetching, caching — delivered in Milestones 0-2)
+- [x] Documentation updates
+- [ ] **FMP provider — DEFERRED** (no API key yet; still gates real Piotroski
+  screening, the economic calendar, and `russell2000` constituents)
+- [ ] **Alpaca portfolio integration — DEFERRED** (requires a broker account)
+- ~~FINVIZ provider~~ — **DROPPED**: scraping is fragile and against FINVIZ
+  ToS without Elite; the local screener covers the same ground
 
 ## 16. Comparison with claude-trading-skills
 
