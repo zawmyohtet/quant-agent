@@ -164,6 +164,28 @@ async def _handle_screen(args: list[str], app: QuantAgentApp) -> None:
     await app._submit_user_message(f"Screen stocks where {criteria}")
 
 
+async def _handle_market(args: list[str], app: QuantAgentApp) -> None:
+    await app._submit_user_message(
+        "Give me a market overview: current regime, timing signals "
+        "(distribution days, follow-through day), breadth, sector performance, "
+        "and the recommended equity exposure."
+    )
+
+
+async def _handle_sector(args: list[str], app: QuantAgentApp) -> None:
+    if args:
+        sector = " ".join(args)
+        await app._submit_user_message(
+            f"Analyze the {sector} sector: performance across timeframes, "
+            "relative strength vs SPY, top industries, and rotation context."
+        )
+        return
+    await app._submit_user_message(
+        "Rank all sectors by performance and relative strength, and detect "
+        "the current sector rotation pattern."
+    )
+
+
 async def _handle_compare(args: list[str], app: QuantAgentApp) -> None:
     if len(args) < 2:
         _system(app, "Usage: /compare <SYM1> <SYM2> ...")
@@ -226,6 +248,15 @@ REGISTRY: list[SlashCommand] = [
     ),
     SlashCommand(
         "screen", "/screen <criteria>", "Screen stocks matching criteria.", _handle_screen
+    ),
+    SlashCommand(
+        "market", "/market", "Market overview: regime, breadth, timing, exposure.", _handle_market
+    ),
+    SlashCommand(
+        "sector",
+        "/sector [name]",
+        "Sector analysis (all sectors, or one by name).",
+        _handle_sector,
     ),
     SlashCommand(
         "compare",

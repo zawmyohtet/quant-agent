@@ -16,6 +16,11 @@ from quantagent.tools.fundamental import (
     score_altman_z,
     score_piotroski_f,
 )
+from quantagent.tools.market_breadth import (
+    count_distribution_days,
+    detect_follow_through_day,
+    detect_market_regime,
+)
 from quantagent.tools.market_data import (
     get_earnings_calendar,
     get_economic_indicators,
@@ -26,6 +31,7 @@ from quantagent.tools.market_data import (
     get_sector_performance,
     search_symbols,
 )
+from quantagent.tools.market_overview import get_market_summary
 from quantagent.tools.portfolio import (
     compute_portfolio_metrics,
     monte_carlo_simulation,
@@ -33,6 +39,12 @@ from quantagent.tools.portfolio import (
 )
 from quantagent.tools.providers import get_active_provider
 from quantagent.tools.screener import screen_stocks
+from quantagent.tools.sector_analysis import (
+    compute_sector_relative_strength,
+    detect_sector_rotation,
+    get_industry_performance,
+    get_sector_performance_ranked,
+)
 from quantagent.tools.technical import (
     compute_indicators,
     detect_patterns,
@@ -388,6 +400,110 @@ async def _get_economic_indicators(provider: Any) -> str:
     return _json_dumps(result)
 
 
+async def _get_sector_performance_ranked(provider: Any, periods: str = "") -> str:
+    """Rank all 11 GICS sectors by performance across multiple timeframes.
+
+    Args:
+        periods: Comma-separated timeframes from 1d, 1w, 1m, 3m, 6m, 1y.
+            Empty uses all six.
+    """
+    period_list = [p.strip() for p in periods.split(",")] if periods else None
+    df = await _with_timeout(get_sector_performance_ranked(provider, periods=period_list))
+    return str(df.to_json(orient="records", indent=2))
+
+
+async def _get_industry_performance(provider: Any, sector: str) -> str:
+    """Rank industries within a sector by 1m/3m performance.
+
+    Classifies S&P 500 members into industries (cached weekly). Slow on
+    first use for a universe — up to two minutes on the free tier.
+
+    Args:
+        sector: Sector name, e.g. Technology, Healthcare, Financials.
+    """
+    df = await _with_timeout(
+        get_industry_performance(provider, sector), timeout=_LONG_TOOL_TIMEOUT_SEC
+    )
+    if df.empty:
+        return f"No industry data found for sector: {sector}"
+    return str(df.to_json(orient="records", indent=2))
+
+
+async def _compute_sector_relative_strength(
+    provider: Any, benchmark: str = "SPY", period: str = "3m"
+) -> str:
+    """Compute each sector's relative strength vs a benchmark.
+
+    Args:
+        benchmark: Benchmark symbol (default SPY).
+        period: RS window — 1w, 1m, 3m, 6m, 1y.
+    """
+    df = await _with_timeout(
+        compute_sector_relative_strength(provider, benchmark=benchmark, period=period)
+    )
+    return str(df.to_json(orient="records", indent=2))
+
+
+async def _detect_sector_rotation(provider: Any, lookback_days: int = 90) -> str:
+    """Detect sector rotation: leading/lagging/improving/deteriorating sectors.
+
+    Also returns a risk-on/risk-off rotation signal and an estimated
+    economic cycle phase.
+
+    Args:
+        lookback_days: Relative-strength lookback in sessions (default 90).
+    """
+    result = await _with_timeout(detect_sector_rotation(provider, lookback_days=lookback_days))
+    return _json_dumps(result)
+
+
+async def _count_distribution_days(provider: Any, index_symbol: str = "SPY") -> str:
+    """Count IBD-style distribution days (institutional selling) on an index.
+
+    Five or more in 25 sessions signals a market under pressure.
+
+    Args:
+        index_symbol: Index ETF to analyze — SPY or QQQ.
+    """
+    result = await _with_timeout(count_distribution_days(provider, index_symbol=index_symbol))
+    return _json_dumps(result)
+
+
+async def _detect_follow_through_day(provider: Any, index_symbol: str = "SPY") -> str:
+    """Detect an O'Neil Follow-Through Day confirming a new uptrend.
+
+    Returns correction/rally-attempt/confirmed-uptrend status.
+
+    Args:
+        index_symbol: Index ETF to analyze — SPY or QQQ.
+    """
+    result = await _with_timeout(detect_follow_through_day(provider, index_symbol=index_symbol))
+    return _json_dumps(result)
+
+
+async def _detect_market_regime(provider: Any) -> str:
+    """Detect the current market regime with a recommended exposure band.
+
+    Combines cross-asset ratios (RSP/SPY, IWM/SPY, XLY/XLP, SPY/TLT,
+    HYG/LQD), index trend, VIX, and sector breadth into a 0-100 score
+    mapped to strong-bull/bull/neutral/bear/strong-bear plus a suggested
+    equity exposure range.
+    """
+    result = await _with_timeout(detect_market_regime(provider))
+    return _json_dumps(result)
+
+
+async def _get_market_summary(provider: Any) -> str:
+    """One-shot market overview: indices, timing signals, breadth, regime.
+
+    Includes distribution-day count, follow-through-day status, percent
+    of sectors above key moving averages, market regime with recommended
+    exposure, and SPY support/resistance levels.
+    """
+    result = await _with_timeout(get_market_summary(provider), timeout=_LONG_TOOL_TIMEOUT_SEC)
+    return _json_dumps(result)
+
+
 # ── Registry builder ─────────────────────────────────────────────────────────
 
 
@@ -412,6 +528,14 @@ def build_tool_registry(config: QuantAgentConfig) -> list[Any]:
         _bind_provider(_get_earnings_calendar, provider),
         _bind_provider(_get_sector_performance, provider),
         _bind_provider(_get_economic_indicators, provider),
+        _bind_provider(_get_sector_performance_ranked, provider),
+        _bind_provider(_get_industry_performance, provider),
+        _bind_provider(_compute_sector_relative_strength, provider),
+        _bind_provider(_detect_sector_rotation, provider),
+        _bind_provider(_count_distribution_days, provider),
+        _bind_provider(_detect_follow_through_day, provider),
+        _bind_provider(_detect_market_regime, provider),
+        _bind_provider(_get_market_summary, provider),
         compute_dcf_valuation,
         compute_piotroski_score,
         compute_altman_z,

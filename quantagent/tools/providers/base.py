@@ -51,6 +51,14 @@ class AbstractDataProvider(ABC):
     async def get_economic_indicators(self) -> dict:
         """Macro data. Returns {vix, 10y_yield, 2y_yield, sp500_pe, gdp_growth, cpi, unemployment_rate}."""
 
+    async def get_industry_classification(self, symbol: str) -> dict:
+        """Return sector and industry for a symbol.
+
+        Default implementation reports the classification as unavailable;
+        providers with classification data should override.
+        """
+        return {"symbol": symbol, "sector": None, "industry": None}
+
     async def get_batch_ohlcv(
         self, symbols: list[str], period: str = "1y", interval: str = "1d"
     ) -> dict[str, pd.DataFrame]:

@@ -107,6 +107,16 @@ class YFinanceProvider(AbstractDataProvider):
             "beta": info.get("beta"),
         }
 
+    async def get_industry_classification(self, symbol: str) -> dict:
+        """Fetch sector and industry classification from ticker info."""
+        ticker = yf.Ticker(symbol)
+        info = await asyncio.to_thread(lambda: ticker.info)
+        return {
+            "symbol": symbol,
+            "sector": info.get("sector"),
+            "industry": info.get("industry"),
+        }
+
     async def search_symbols(self, query: str) -> list[dict]:
         """Search for symbols by company name."""
         search = await asyncio.to_thread(yf.Search, query, max_results=20)

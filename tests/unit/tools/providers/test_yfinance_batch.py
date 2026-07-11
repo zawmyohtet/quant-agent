@@ -69,3 +69,16 @@ def test_normalize_preserves_tz_aware_index() -> None:
 def test_normalize_rejects_non_ohlcv_frame() -> None:
     frame = pd.DataFrame({"Other": [1.0]})
     assert _normalize_ohlcv_frame(frame) is None
+
+
+async def test_industry_classification_reads_info(monkeypatch) -> None:
+    import quantagent.tools.providers.yfinance_provider as mod
+
+    class _FakeTicker:
+        def __init__(self, symbol: str) -> None:
+            self.info = {"sector": "Technology", "industry": "Software"}
+
+    monkeypatch.setattr(mod.yf, "Ticker", _FakeTicker)
+    provider = mod.YFinanceProvider()
+    result = await provider.get_industry_classification("MSFT")
+    assert result == {"symbol": "MSFT", "sector": "Technology", "industry": "Software"}

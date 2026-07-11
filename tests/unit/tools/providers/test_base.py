@@ -79,3 +79,9 @@ async def test_batch_empty_symbols() -> None:
     provider = MockProvider()
     assert await provider.get_batch_ohlcv([]) == {}
     assert await provider.get_batch_quotes([]) == {}
+
+
+async def test_industry_classification_default_unavailable() -> None:
+    provider = MockProvider()
+    result = await provider.get_industry_classification("AAPL")
+    assert result == {"symbol": "AAPL", "sector": None, "industry": None}
