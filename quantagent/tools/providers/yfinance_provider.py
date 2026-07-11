@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from datetime import UTC, datetime, timedelta
+from typing import cast
 
 import pandas as pd
 import yfinance as yf  # type: ignore[import-untyped]
@@ -50,6 +51,24 @@ class YFinanceProvider(AbstractDataProvider):
         df.index = pd.DatetimeIndex(df.index).tz_convert(UTC)
         df.index.name = "Date"
         return df
+
+    async def get_batch_ohlcv(
+        self, symbols: list[str], period: str = "1y", interval: str = "1d"
+    ) -> dict[str, pd.DataFrame]:
+        """Fetch OHLCV for multiple symbols in one yf.download request."""
+        if not symbols:
+            return {}
+        raw: pd.DataFrame = await asyncio.to_thread(
+            yf.download,
+            tickers=list(symbols),
+            period=period,
+            interval=interval,
+            group_by="ticker",
+            auto_adjust=True,
+            progress=False,
+            threads=True,
+        )
+        return _split_batch_frame(raw, symbols)
 
     async def get_quote(self, symbol: str) -> dict:
         """Fetch current quote."""
@@ -238,6 +257,48 @@ class YFinanceProvider(AbstractDataProvider):
             "gdp_growth, cpi, unemployment_rate not available via yfinance"
         )
         return indicators
+
+
+def _split_batch_frame(raw: pd.DataFrame, symbols: list[str]) -> dict[str, pd.DataFrame]:
+    """Split a multi-ticker yf.download frame into per-symbol OHLCV frames."""
+    if raw is None or raw.empty:
+        return {}
+    results: dict[str, pd.DataFrame] = {}
+    for sym in symbols:
+        frame = _extract_symbol_frame(raw, sym, len(symbols))
+        if frame is not None:
+            results[sym] = frame
+    return results
+
+
+def _extract_symbol_frame(
+    raw: pd.DataFrame, symbol: str, n_symbols: int
+) -> pd.DataFrame | None:
+    """Extract and normalize one symbol's OHLCV frame from a batch download."""
+    if isinstance(raw.columns, pd.MultiIndex):
+        if symbol not in raw.columns.get_level_values(0):
+            logger.warning("Batch download returned no data for %s", symbol)
+            return None
+        frame = cast(pd.DataFrame, raw[symbol])
+    elif n_symbols == 1:
+        frame = raw
+    else:
+        return None
+    return _normalize_ohlcv_frame(frame)
+
+
+def _normalize_ohlcv_frame(frame: pd.DataFrame) -> pd.DataFrame | None:
+    """Restrict to OHLCV columns, drop empty rows, convert index to UTC."""
+    cols = [c for c in ["Open", "High", "Low", "Close", "Volume"] if c in frame.columns]
+    if not cols:
+        return None
+    result = frame[cols].dropna(how="all").copy()
+    if result.empty:
+        return None
+    index = pd.DatetimeIndex(result.index)
+    result.index = index.tz_localize(UTC) if index.tz is None else index.tz_convert(UTC)
+    result.index.name = "Date"
+    return result
 
 
 def _pct_change(series: pd.Series, periods: int) -> float | None:

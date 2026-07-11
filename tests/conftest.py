@@ -14,3 +14,9 @@ def patch_quantagent_config_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     monkeypatch.setattr(
         config_mod, "_DEFAULT_CONFIG_PATH", tmp_path / "config.toml"
     )
+
+
+@pytest.fixture(autouse=True)
+def patch_quantagent_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Redirect ~/.quantagent to a temp path so tests never touch user data."""
+    monkeypatch.setenv("QUANTAGENT_HOME", str(tmp_path / "quantagent-home"))

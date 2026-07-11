@@ -433,12 +433,19 @@ def _signal_bollinger_breakout(result: pd.DataFrame) -> pd.DataFrame:
     return result
 
 
+def _signal_buy_and_hold(result: pd.DataFrame) -> pd.DataFrame:
+    if not result.empty:
+        result.loc[result.index[0], "Signal"] = 1
+    return result
+
+
 _STRATEGY_DISPATCH: dict[str, Callable[[pd.DataFrame], pd.DataFrame]] = {
     "sma_crossover": _signal_sma_crossover,
     "ema_crossover": _signal_ema_crossover,
     "rsi_mean_reversion": _signal_rsi_mean_reversion,
     "macd_momentum": _signal_macd_momentum,
     "bollinger_breakout": _signal_bollinger_breakout,
+    "buy_and_hold": _signal_buy_and_hold,
 }
 
 
@@ -446,7 +453,7 @@ def generate_signals(df: pd.DataFrame, strategy: str) -> pd.DataFrame:
     """Generate trading signals from a strategy.
 
     Strategies: sma_crossover, ema_crossover, rsi_mean_reversion,
-    macd_momentum, bollinger_breakout.
+    macd_momentum, bollinger_breakout, buy_and_hold.
 
     Returns:
         DataFrame with Signal column (1=buy, -1=sell, 0=hold).

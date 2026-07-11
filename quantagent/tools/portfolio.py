@@ -162,27 +162,12 @@ async def monte_carlo_simulation(
     }
 
 
-async def _fetch_single_price(
-    provider: AbstractDataProvider, symbol: str, period: str
-) -> tuple[str, pd.Series | None]:
-    """Fetch closing price for a single symbol. Returns (symbol, Close | None)."""
-    try:
-        df = await provider.get_ohlcv(symbol, period=period)
-        return symbol, df["Close"] if not df.empty else None
-    except Exception as exc:
-        logger.warning("Failed to fetch prices for %s: %s", symbol, exc)
-        return symbol, None
-
-
 async def _fetch_prices(
     provider: AbstractDataProvider, symbols: list[str], period: str
 ) -> pd.DataFrame:
-    """Fetch closing prices for multiple symbols."""
-    prices: dict[str, pd.Series] = {}
-    for sym in symbols:
-        _, close = await _fetch_single_price(provider, sym, period)
-        if close is not None:
-            prices[sym] = close
+    """Fetch closing prices for multiple symbols via batch OHLCV."""
+    frames = await provider.get_batch_ohlcv(symbols, period=period)
+    prices = {sym: df["Close"] for sym, df in frames.items() if not df.empty}
     if not prices:
         raise ValueError("No price data fetched for any symbol")
     return pd.DataFrame(prices).dropna()

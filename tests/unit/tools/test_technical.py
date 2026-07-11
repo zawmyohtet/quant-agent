@@ -69,6 +69,13 @@ def test_generate_signals_sma_crossover():
     assert set(signals["Signal"].unique()).issubset({-1, 0, 1})
 
 
+def test_generate_signals_buy_and_hold():
+    df = _synthetic_ohlcv(n=50)
+    signals = generate_signals(df, "buy_and_hold")
+    assert signals["Signal"].iloc[0] == 1
+    assert (signals["Signal"].iloc[1:] == 0).all()
+
+
 def test_generate_signals_unknown():
     df = _synthetic_ohlcv()
     signals = generate_signals(df, "unknown_strategy")

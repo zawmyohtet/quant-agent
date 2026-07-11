@@ -43,6 +43,9 @@ from quantagent.tui.config import QuantAgentConfig
 logger = logging.getLogger(__name__)
 
 _TOOL_TIMEOUT_SEC = 30
+# Universe-scale operations (screening, breadth) may fetch data for hundreds
+# of symbols on a cold cache and need more headroom than the default.
+_LONG_TOOL_TIMEOUT_SEC = 120
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -276,18 +279,21 @@ async def _screen_stocks_tool(
     sort_by: str = "market_cap",
     limit: int = 20,
 ) -> str:
-    """Screen stocks by fundamental and technical criteria.
+    """Screen stocks by fundamental criteria.
 
     Args:
-        universe: Universe to screen — sp500, nasdaq100, russell2000.
+        universe: Universe to screen — sp500, nasdaq100.
         criteria: JSON string of criteria, e.g. '{"pe_lt": 15, "roe_gt": 0.20}'.
+            Supported keys: pe_lt/gt, pb_lt, roe_gt, roa_gt, debt_equity_lt,
+            mcap_gt/lt, volume_gt, dividend_yield_gt, revenue_growth_gt,
+            eps_growth_gt, beta_lt.
         sort_by: Field to sort by.
         limit: Maximum results to return.
     """
     crit = json.loads(criteria) if criteria else {}
     df = await _with_timeout(screen_stocks(
         provider, universe=universe, criteria=crit, sort_by=sort_by, limit=limit,
-    ))
+    ), timeout=_LONG_TOOL_TIMEOUT_SEC)
     if df.empty:
         return "No stocks matched the criteria."
     return str(df.to_json(orient="records", indent=2))

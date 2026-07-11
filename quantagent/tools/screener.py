@@ -1,6 +1,7 @@
 """Stock screener tool functions."""
 from __future__ import annotations
 
+import asyncio
 import logging
 import operator as op_module
 from collections.abc import Callable
@@ -92,6 +93,20 @@ async def _build_screening_row(
         return None
 
 
+async def _fetch_screening_rows(
+    provider: AbstractDataProvider, tickers: list[str]
+) -> list[dict]:
+    """Build screening rows for all tickers with bounded concurrency."""
+    semaphore = asyncio.Semaphore(8)
+
+    async def _bounded(ticker: str) -> dict | None:
+        async with semaphore:
+            return await _build_screening_row(provider, ticker)
+
+    results = await asyncio.gather(*(_bounded(t) for t in tickers))
+    return [row for row in results if row is not None]
+
+
 async def screen_stocks(
     provider: AbstractDataProvider,
     universe: str = "sp500",
@@ -100,11 +115,11 @@ async def screen_stocks(
     ascending: bool = False,
     limit: int = 20,
 ) -> pd.DataFrame:
-    """Screen stocks by fundamental and technical criteria.
+    """Screen stocks by fundamental criteria.
 
     Supported criteria keys: pe_lt/gt, pb_lt, roe_gt, roa_gt, debt_equity_lt,
     mcap_gt/lt, volume_gt, dividend_yield_gt, revenue_growth_gt, eps_growth_gt,
-    rsi_lt/gt, beta_lt.
+    beta_lt.
     """
     criteria = criteria or {}
     tickers = _fetch_universe_tickers(universe)
@@ -113,11 +128,7 @@ async def screen_stocks(
         return pd.DataFrame()
 
     max_screen = min(len(tickers), 100)
-    rows = []
-    for ticker in tickers[:max_screen]:
-        row = await _build_screening_row(provider, ticker)
-        if row is not None:
-            rows.append(row)
+    rows = await _fetch_screening_rows(provider, tickers[:max_screen])
 
     if not rows:
         return pd.DataFrame()
@@ -144,8 +155,6 @@ _CRITERIA_DISPATCH: dict[str, tuple[str, Callable[[Any, Any], bool]]] = {
     "dividend_yield_gt": ("dividend_yield", op_module.gt),
     "revenue_growth_gt": ("revenue_growth", op_module.gt),
     "eps_growth_gt": ("eps_growth", op_module.gt),
-    "rsi_lt": ("rsi", op_module.lt),
-    "rsi_gt": ("rsi", op_module.gt),
     "beta_lt": ("beta", op_module.lt),
 }
 
