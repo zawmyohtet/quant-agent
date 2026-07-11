@@ -7,6 +7,7 @@ from typing import Any
 
 import numpy as np
 import pandas as pd
+import pandas_ta  # noqa: F401  # registers the DataFrame .ta accessor
 
 logger = logging.getLogger(__name__)
 

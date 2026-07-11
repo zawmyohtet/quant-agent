@@ -35,6 +35,11 @@ def workflows_dir() -> Path:
     return quantagent_home() / "workflows"
 
 
+def reports_dir() -> Path:
+    """Return the generated-reports directory."""
+    return quantagent_home() / "reports"
+
+
 def trades_db_path() -> Path:
     """Return the trade journal SQLite database path."""
     return quantagent_home() / "trades.db"

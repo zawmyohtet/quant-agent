@@ -1,0 +1,16 @@
+# {{ title }}
+
+_Generated: {{ generated_at }}_
+
+{% for section in sections %}
+## {{ section.title }}
+
+{% if section.content %}
+{{ section.content }}
+
+{% endif %}
+{% for table in section.tables_md %}
+{{ table }}
+
+{% endfor %}
+{% endfor %}

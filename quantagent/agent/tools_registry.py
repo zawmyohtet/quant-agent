@@ -5,10 +5,12 @@ import asyncio
 import inspect
 import json
 import logging
+from datetime import UTC, datetime
 from typing import Any
 
 from langchain.tools import tool
 
+from quantagent.tools._paths import reports_dir
 from quantagent.tools.backtesting import BacktestConfig, format_backtest_result, run_backtest
 from quantagent.tools.breadth_store import BreadthStore
 from quantagent.tools.fundamental import (
@@ -49,6 +51,17 @@ from quantagent.tools.portfolio import (
     optimize_portfolio,
 )
 from quantagent.tools.providers import get_active_provider
+from quantagent.tools.reports import (
+    Report,
+    export_report_html,
+    export_report_markdown,
+    generate_market_daily,
+    generate_portfolio_report,
+    generate_screening_report,
+    generate_sector_report,
+    generate_stock_report,
+    render_markdown,
+)
 from quantagent.tools.screener import (
     screen_breakout_candidates,
     screen_by_technicals,
@@ -686,6 +699,66 @@ async def _delete_universe_tool(provider: Any, name: str) -> str:
     return f"Universe '{name}' deleted."
 
 
+async def _build_report(
+    provider: Any, report_type: str, target: str, criteria: str, universe: str
+) -> Report:
+    if report_type == "market":
+        return await generate_market_daily(provider)
+    if report_type == "sector":
+        return await generate_sector_report(provider, target)
+    if report_type == "stock":
+        return await generate_stock_report(provider, target)
+    if report_type == "portfolio":
+        return await generate_portfolio_report(provider, _parse_comma_symbols(target))
+    if report_type == "screening":
+        crit = json.loads(criteria) if criteria else None
+        return await generate_screening_report(
+            provider, screen_type=target or "fundamental",
+            criteria=crit, universe=universe,
+        )
+    raise ValueError(
+        f"Unknown report type: {report_type}. "
+        "Valid: market, sector, stock, portfolio, screening."
+    )
+
+
+async def _generate_report_tool(
+    provider: Any,
+    report_type: str,
+    target: str = "",
+    fmt: str = "markdown",
+    universe: str = "sp500",
+    criteria: str = "",
+) -> str:
+    """Generate a structured report and save it to ~/.quantagent/reports/.
+
+    Args:
+        report_type: market | sector | stock | portfolio | screening.
+        target: Depends on type — sector name (sector), ticker (stock),
+            comma-separated tickers (portfolio), or screen type
+            fundamental/technical/vcp/breakout/oversold (screening).
+            Unused for market.
+        fmt: Output format — markdown or html.
+        universe: Universe for screening reports.
+        criteria: JSON criteria string for screening reports.
+    """
+    report = await _with_timeout(
+        _build_report(provider, report_type, target, criteria, universe),
+        timeout=_LONG_TOOL_TIMEOUT_SEC,
+    )
+    slug = f"{report_type}{'-' + target.replace(',', '_').lower() if target else ''}"
+    stamp = datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
+    ext = "html" if fmt == "html" else "md"
+    path = reports_dir() / f"{slug}-{stamp}.{ext}"
+    if fmt == "html":
+        export_report_html(report, path)
+    else:
+        export_report_markdown(report, path)
+    rendered = render_markdown(report)
+    preview = rendered[:4000] + ("\n\n_[truncated]_" if len(rendered) > 4000 else "")
+    return f"Report saved to {path}\n\n{preview}"
+
+
 async def _warm_breadth_cache(provider: Any, universe: str = "sp500") -> str:
     """Warm the universe breadth cache (one-time, slow — up to 10 minutes).
 
@@ -949,6 +1022,7 @@ def build_tool_registry(config: QuantAgentConfig) -> list[Any]:
         _bind_provider(_list_universes_tool, provider),
         _bind_provider(_create_universe_tool, provider),
         _bind_provider(_delete_universe_tool, provider),
+        _bind_provider(_generate_report_tool, provider),
         compute_dcf_valuation,
         compute_piotroski_score,
         compute_altman_z,

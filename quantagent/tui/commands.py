@@ -186,6 +186,19 @@ async def _handle_sector(args: list[str], app: QuantAgentApp) -> None:
     )
 
 
+async def _handle_report(args: list[str], app: QuantAgentApp) -> None:
+    if not args:
+        _system(app, "Usage: /report <market|sector|stock|portfolio|screening> [target]")
+        return
+    report_type = args[0].lower()
+    target = " ".join(args[1:])
+    detail = f" for {target}" if target else ""
+    await app._submit_user_message(
+        f"Generate a {report_type} report{detail} and save it as markdown. "
+        "Summarize the key findings."
+    )
+
+
 async def _handle_universe(args: list[str], app: QuantAgentApp) -> None:
     if not args:
         _system(app, "Usage: /universe <name>")
@@ -288,6 +301,12 @@ REGISTRY: list[SlashCommand] = [
         "/heatmap [metric]",
         "Market heatmap (performance/volume/volatility/rsi).",
         _handle_heatmap,
+    ),
+    SlashCommand(
+        "report",
+        "/report <type> [target]",
+        "Generate a report (market/sector/stock/portfolio/screening).",
+        _handle_report,
     ),
     SlashCommand(
         "universe", "/universe <name>", "Switch active screening universe.", _handle_universe
