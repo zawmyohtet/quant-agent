@@ -186,6 +186,29 @@ async def _handle_sector(args: list[str], app: QuantAgentApp) -> None:
     )
 
 
+async def _handle_journal(args: list[str], app: QuantAgentApp) -> None:
+    if args and args[0] == "add":
+        if len(args) < 3:
+            _system(app, "Usage: /journal add <SYMBOL> <thesis>")
+            return
+        symbol, thesis = args[1].upper(), " ".join(args[2:])
+        await app._submit_user_message(
+            f"Log a trade idea for {symbol} in the journal with this thesis: "
+            f"{thesis}. Ask me for the entry plan, target, and stop if needed."
+        )
+        return
+    await app._submit_user_message(
+        "Show my trade journal: open trades, recent history, and stats."
+    )
+
+
+async def _handle_riskgate(args: list[str], app: QuantAgentApp) -> None:
+    await app._submit_user_message(
+        "Check the risk circuit breaker and summarize my current trading "
+        "discipline status."
+    )
+
+
 async def _handle_workflow(args: list[str], app: QuantAgentApp) -> None:
     if not args:
         _system(app, "Usage: /workflow <name> [target]")
@@ -331,6 +354,15 @@ REGISTRY: list[SlashCommand] = [
     ),
     SlashCommand(
         "workflows", "/workflows", "List available workflows.", _handle_workflows
+    ),
+    SlashCommand(
+        "journal",
+        "/journal [add <SYMBOL> <thesis>]",
+        "View trade journal, or log a trade idea.",
+        _handle_journal,
+    ),
+    SlashCommand(
+        "riskgate", "/riskgate", "Check circuit breaker & discipline status.", _handle_riskgate
     ),
     SlashCommand(
         "universe", "/universe <name>", "Switch active screening universe.", _handle_universe

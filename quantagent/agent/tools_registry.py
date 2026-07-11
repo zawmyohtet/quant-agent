@@ -63,6 +63,7 @@ from quantagent.tools.reports import (
     generate_stock_report,
     render_markdown,
 )
+from quantagent.tools.risk_gate import check_circuit_breaker, check_discipline_gate
 from quantagent.tools.screener import (
     screen_breakout_candidates,
     screen_by_technicals,
@@ -81,6 +82,14 @@ from quantagent.tools.technical import (
     compute_indicators,
     detect_patterns,
     detect_support_resistance,
+)
+from quantagent.tools.trade_journal import (
+    close_trade,
+    compute_trade_stats,
+    get_open_trades,
+    get_trade_history,
+    log_trade_idea,
+    update_trade_status,
 )
 from quantagent.tools.universe import (
     create_universe,
@@ -200,6 +209,99 @@ async def compute_altman_z(fundamentals_json: str) -> str:
     data = json.loads(fundamentals_json)
     result = score_altman_z(data)
     return _json_dumps(result)
+
+
+@tool
+async def journal_log_trade(
+    symbol: str,
+    thesis: str,
+    entry_plan: str,
+    target: float | None = None,
+    stop: float | None = None,
+) -> str:
+    """Log a new trade idea in the trade journal (status: idea).
+
+    Args:
+        symbol: Stock ticker symbol.
+        thesis: Why this trade — the falsifiable reasoning.
+        entry_plan: Entry conditions, planned size, and timeframe.
+        target: Price target (optional).
+        stop: Stop-loss price — strongly recommended; the discipline
+            gate blocks entries without one.
+    """
+    trade = await log_trade_idea(symbol, thesis, entry_plan, target=target, stop=stop)
+    return trade.model_dump_json(indent=2)
+
+
+@tool
+async def journal_update_status(
+    trade_id: str,
+    status: str,
+    notes: str = "",
+    entry_price: float | None = None,
+) -> str:
+    """Advance a journaled trade's status (forward-only lifecycle).
+
+    Lifecycle: idea -> entry_ready -> active -> partially_closed ->
+    closed; idea/entry_ready may also move to invalidated. Backward
+    transitions are rejected.
+
+    Args:
+        trade_id: Journal trade id.
+        status: New status.
+        notes: Optional note appended to the trade.
+        entry_price: Required when moving to active.
+    """
+    trade = await update_trade_status(
+        trade_id, status, notes=notes or None, entry_price=entry_price
+    )
+    return trade.model_dump_json(indent=2)
+
+
+@tool
+async def journal_open_trades() -> str:
+    """List all open trade ideas in the journal (not closed/invalidated)."""
+    trades = await get_open_trades()
+    if not trades:
+        return "The trade journal has no open trades."
+    return _json_dumps([t.model_dump(mode="json") for t in trades])
+
+
+@tool
+async def journal_history(days: int = 30, status: str = "") -> str:
+    """Fetch journal trade history.
+
+    Args:
+        days: Lookback window in days (default 30).
+        status: Optional status filter (idea, entry_ready, active,
+            partially_closed, closed, invalidated).
+    """
+    trades = await get_trade_history(days=days, status=status or None)
+    if not trades:
+        return "No journaled trades in that window."
+    return _json_dumps([t.model_dump(mode="json") for t in trades])
+
+
+@tool
+async def journal_stats() -> str:
+    """Compute trade journal statistics.
+
+    Returns win rate, average win/loss, profit factor, expectancy,
+    max consecutive losses, and average MAE/MFE over closed trades.
+    """
+    return _json_dumps(await compute_trade_stats())
+
+
+@tool
+async def check_risk_circuit_breaker() -> str:
+    """Check the drawdown circuit breaker before planning new trades.
+
+    Evaluates journal P&L against daily (2%), weekly (5%), and monthly
+    (8%) loss limits plus a losing-streak cooldown. Returns
+    trading_allowed, cooldown, or halted with the triggered rules.
+    This is a recommendation gate — it never touches a broker.
+    """
+    return _json_dumps(await check_circuit_breaker())
 
 
 # ── Provider-dependent tool implementations (bare, bound at runtime) ─────────
@@ -701,6 +803,42 @@ async def _delete_universe_tool(provider: Any, name: str) -> str:
     return f"Universe '{name}' deleted."
 
 
+async def _journal_close_trade(
+    provider: Any, trade_id: str, exit_price: float, outcome_notes: str = ""
+) -> str:
+    """Close an active journaled trade, recording P&L and MAE/MFE.
+
+    Computes realized P&L vs the entry price and the maximum
+    adverse/favorable excursion over the holding period from OHLCV.
+
+    Args:
+        trade_id: Journal trade id (must be active or partially_closed).
+        exit_price: Exit fill price.
+        outcome_notes: Postmortem note (what worked / what didn't).
+    """
+    trade = await _with_timeout(
+        close_trade(provider, trade_id, exit_price, outcome_notes=outcome_notes or None)
+    )
+    return str(trade.model_dump_json(indent=2))
+
+
+async def _check_trade_discipline(provider: Any, trade_id: str) -> str:
+    """Run the pre-trade discipline gate on a journaled trade idea.
+
+    Blocks (result: blocked) when the thesis/entry plan is missing, no
+    stop is defined, the circuit breaker is tripped, or the market
+    regime is reduce-only (bear/strong-bear). Run this before moving
+    any trade to entry_ready or active.
+
+    Args:
+        trade_id: Journal trade id to validate.
+    """
+    result = await _with_timeout(
+        check_discipline_gate(provider, trade_id), timeout=_LONG_TOOL_TIMEOUT_SEC
+    )
+    return _json_dumps(result)
+
+
 async def _synthesize_conviction_tool(provider: Any) -> str:
     """Synthesize a 0-100 market conviction score with exposure guidance.
 
@@ -1085,6 +1223,14 @@ def build_tool_registry(config: QuantAgentConfig) -> list[Any]:
         _bind_provider(_synthesize_conviction_tool, provider),
         _bind_provider(_list_workflows_tool, provider),
         _bind_provider(_run_workflow_tool, provider),
+        _bind_provider(_journal_close_trade, provider),
+        _bind_provider(_check_trade_discipline, provider),
+        journal_log_trade,
+        journal_update_status,
+        journal_open_trades,
+        journal_history,
+        journal_stats,
+        check_risk_circuit_breaker,
         compute_dcf_valuation,
         compute_piotroski_score,
         compute_altman_z,
