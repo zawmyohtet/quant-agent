@@ -49,7 +49,14 @@ from quantagent.tools.portfolio import (
     optimize_portfolio,
 )
 from quantagent.tools.providers import get_active_provider
-from quantagent.tools.screener import screen_stocks
+from quantagent.tools.screener import (
+    screen_breakout_candidates,
+    screen_by_technicals,
+    screen_combined,
+    screen_oversold_reversal,
+    screen_stocks,
+    screen_vcp_pattern,
+)
 from quantagent.tools.sector_analysis import (
     compute_sector_relative_strength,
     detect_sector_rotation,
@@ -60,6 +67,12 @@ from quantagent.tools.technical import (
     compute_indicators,
     detect_patterns,
     detect_support_resistance,
+)
+from quantagent.tools.universe import (
+    create_universe,
+    delete_universe,
+    get_universe_metadata,
+    list_universes,
 )
 from quantagent.tui.config import QuantAgentConfig
 
@@ -517,6 +530,162 @@ async def _get_market_summary(provider: Any) -> str:
     return _json_dumps(result)
 
 
+def _df_or_message(df: Any, empty_message: str) -> str:
+    if df.empty:
+        return empty_message
+    return str(df.to_json(orient="records", indent=2))
+
+
+async def _screen_technicals_tool(
+    provider: Any, criteria: str, universe: str = "sp500", limit: int = 20
+) -> str:
+    """Screen stocks by technical criteria computed from daily OHLCV.
+
+    Args:
+        criteria: JSON string, e.g. '{"rsi_lt": 30, "price_above_sma": 200}'.
+            Supported keys: rsi_lt/rsi_gt (float), macd_bullish (bool),
+            price_above_sma/price_below_sma (SMA period), volume_expansion
+            (min ratio vs 20d avg), atr_breakout (bool), adx_gt (float).
+        universe: Universe to screen — sp500, nasdaq100, sector_etfs, or custom.
+        limit: Maximum results.
+    """
+    crit = json.loads(criteria)
+    df = await _with_timeout(
+        screen_by_technicals(provider, crit, universe=universe, limit=limit),
+        timeout=_LONG_TOOL_TIMEOUT_SEC,
+    )
+    return _df_or_message(df, "No stocks matched the technical criteria.")
+
+
+async def _screen_combined_tool(
+    provider: Any,
+    technical_criteria: str = "",
+    fundamental_criteria: str = "",
+    universe: str = "sp500",
+    limit: int = 20,
+) -> str:
+    """Screen by combined fundamental + technical criteria (intersection).
+
+    Fundamental filters run first (cheap), technicals only on survivors.
+
+    Args:
+        technical_criteria: JSON string (see screen_technicals_tool keys).
+        fundamental_criteria: JSON string (see screen_stocks_tool keys).
+        universe: Universe to screen.
+        limit: Maximum results.
+    """
+    tech = json.loads(technical_criteria) if technical_criteria else None
+    fund = json.loads(fundamental_criteria) if fundamental_criteria else None
+    df = await _with_timeout(
+        screen_combined(provider, technical_criteria=tech,
+                        fundamental_criteria=fund, universe=universe, limit=limit),
+        timeout=_LONG_TOOL_TIMEOUT_SEC,
+    )
+    return _df_or_message(df, "No stocks matched the combined criteria.")
+
+
+async def _screen_vcp_tool(
+    provider: Any, universe: str = "sp500", limit: int = 20
+) -> str:
+    """Screen for Minervini Volatility Contraction Patterns (VCP).
+
+    Finds stocks with a prior 30%+ advance now forming a tightening,
+    low-volume consolidation above the 200-day SMA — classic pre-breakout
+    structure.
+
+    Args:
+        universe: Universe to screen.
+        limit: Maximum results.
+    """
+    df = await _with_timeout(
+        screen_vcp_pattern(provider, universe=universe, limit=limit),
+        timeout=_LONG_TOOL_TIMEOUT_SEC,
+    )
+    return _df_or_message(df, "No VCP candidates found.")
+
+
+async def _screen_breakouts_tool(
+    provider: Any,
+    universe: str = "sp500",
+    proximity_to_high_pct: float = 0.05,
+    volume_ratio_min: float = 1.5,
+    limit: int = 20,
+) -> str:
+    """Screen for stocks near 52-week highs with volume expansion.
+
+    Args:
+        universe: Universe to screen.
+        proximity_to_high_pct: Max distance below the 52-week high (0.05 = 5%).
+        volume_ratio_min: Minimum last-day volume vs 20-day average.
+        limit: Maximum results.
+    """
+    df = await _with_timeout(
+        screen_breakout_candidates(
+            provider, universe=universe,
+            proximity_to_high_pct=proximity_to_high_pct,
+            volume_ratio_min=volume_ratio_min, limit=limit,
+        ),
+        timeout=_LONG_TOOL_TIMEOUT_SEC,
+    )
+    return _df_or_message(df, "No breakout candidates found.")
+
+
+async def _screen_oversold_tool(
+    provider: Any,
+    universe: str = "sp500",
+    rsi_threshold: float = 30.0,
+    min_decline_pct: float = 0.20,
+    limit: int = 20,
+) -> str:
+    """Screen for oversold reversal candidates.
+
+    RSI below the threshold, price down sharply from its 6-month high,
+    and showing a reversal bar (up day closing in the upper half of its
+    range).
+
+    Args:
+        universe: Universe to screen.
+        rsi_threshold: Maximum RSI-14 (default 30).
+        min_decline_pct: Minimum decline from the 6-month high (0.20 = 20%).
+        limit: Maximum results.
+    """
+    df = await _with_timeout(
+        screen_oversold_reversal(
+            provider, universe=universe, rsi_threshold=rsi_threshold,
+            min_decline_pct=min_decline_pct, limit=limit,
+        ),
+        timeout=_LONG_TOOL_TIMEOUT_SEC,
+    )
+    return _df_or_message(df, "No oversold reversal candidates found.")
+
+
+async def _list_universes_tool(provider: Any) -> str:
+    """List all available screening universes (built-in and custom)."""
+    names = list_universes()
+    return _json_dumps([get_universe_metadata(n) for n in names])
+
+
+async def _create_universe_tool(provider: Any, name: str, symbols: str) -> str:
+    """Create or update a custom screening universe.
+
+    Args:
+        name: Universe name (lowercase letters, digits, _ or -).
+        symbols: Comma-separated ticker symbols.
+    """
+    create_universe(name, _parse_comma_symbols(symbols))
+    return _json_dumps(get_universe_metadata(name))
+
+
+async def _delete_universe_tool(provider: Any, name: str) -> str:
+    """Delete a custom screening universe.
+
+    Args:
+        name: Custom universe name (built-ins cannot be deleted).
+    """
+    delete_universe(name)
+    return f"Universe '{name}' deleted."
+
+
 async def _warm_breadth_cache(provider: Any, universe: str = "sp500") -> str:
     """Warm the universe breadth cache (one-time, slow — up to 10 minutes).
 
@@ -772,6 +941,14 @@ def build_tool_registry(config: QuantAgentConfig) -> list[Any]:
         _bind_provider(_get_top_movers, provider),
         _bind_provider(_get_most_active, provider),
         _bind_provider(_generate_market_heatmap, provider),
+        _bind_provider(_screen_technicals_tool, provider),
+        _bind_provider(_screen_combined_tool, provider),
+        _bind_provider(_screen_vcp_tool, provider),
+        _bind_provider(_screen_breakouts_tool, provider),
+        _bind_provider(_screen_oversold_tool, provider),
+        _bind_provider(_list_universes_tool, provider),
+        _bind_provider(_create_universe_tool, provider),
+        _bind_provider(_delete_universe_tool, provider),
         compute_dcf_valuation,
         compute_piotroski_score,
         compute_altman_z,

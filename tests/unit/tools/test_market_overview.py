@@ -8,12 +8,12 @@ from _synthetic import SyntheticProvider, make_ohlcv, trend_close
 
 from quantagent.tools import breadth_store as breadth_store_mod
 from quantagent.tools.market_overview import (
-    _rsi14,
     generate_market_heatmap,
     get_market_summary,
     get_most_active,
     get_top_movers,
 )
+from quantagent.tools.technical import wilder_rsi
 from quantagent.tools.universe import SECTOR_ETFS
 
 
@@ -65,7 +65,7 @@ async def test_market_summary_skips_missing_index() -> None:
 def _mover_provider(monkeypatch: pytest.MonkeyPatch) -> SyntheticProvider:
     """Fake sp500 universe with distinct drifts and one volume spike."""
     symbols = ["UP2", "UP1", "FLAT", "DN1"]
-    monkeypatch.setattr(breadth_store_mod, "builtin_universe_symbols", lambda name: symbols)
+    monkeypatch.setattr(breadth_store_mod, "load_universe", lambda name: symbols)
     drifts = {"UP2": 0.004, "UP1": 0.002, "FLAT": 0.0, "DN1": -0.003}
     frames = {}
     for sym, drift in drifts.items():
@@ -129,9 +129,9 @@ async def test_heatmap_rejects_unknown_group(monkeypatch: pytest.MonkeyPatch) ->
         await generate_market_heatmap(provider, universe="sp500", group_by="bogus")
 
 
-def test_rsi14_extremes() -> None:
+def test_wilder_rsi_extremes() -> None:
     rising = pd.Series([100.0 + i for i in range(30)])
     falling = pd.Series([100.0 - i for i in range(30)])
-    assert _rsi14(rising) == 100.0
-    assert _rsi14(falling) < 10
-    assert _rsi14(pd.Series([100.0] * 5)) is None
+    assert wilder_rsi(rising) == 100.0
+    assert wilder_rsi(falling) < 10
+    assert wilder_rsi(pd.Series([100.0] * 5)) is None

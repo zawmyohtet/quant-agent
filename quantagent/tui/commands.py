@@ -186,6 +186,23 @@ async def _handle_sector(args: list[str], app: QuantAgentApp) -> None:
     )
 
 
+async def _handle_universe(args: list[str], app: QuantAgentApp) -> None:
+    if not args:
+        _system(app, "Usage: /universe <name>")
+        return
+    name = args[0].lower()
+    await app._submit_user_message(
+        f"Use the '{name}' universe for screening in this conversation. "
+        "Confirm it exists and tell me its symbol count."
+    )
+
+
+async def _handle_universes(args: list[str], app: QuantAgentApp) -> None:
+    await app._submit_user_message(
+        "List all available screening universes with their symbol counts."
+    )
+
+
 async def _handle_heatmap(args: list[str], app: QuantAgentApp) -> None:
     metric = args[0] if args else "performance"
     await app._submit_user_message(
@@ -271,6 +288,12 @@ REGISTRY: list[SlashCommand] = [
         "/heatmap [metric]",
         "Market heatmap (performance/volume/volatility/rsi).",
         _handle_heatmap,
+    ),
+    SlashCommand(
+        "universe", "/universe <name>", "Switch active screening universe.", _handle_universe
+    ),
+    SlashCommand(
+        "universes", "/universes", "List available screening universes.", _handle_universes
     ),
     SlashCommand(
         "compare",

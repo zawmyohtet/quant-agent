@@ -20,7 +20,7 @@ import pandas as pd
 
 from quantagent.tools._paths import cache_dir, ensure_dir
 from quantagent.tools.providers.base import AbstractDataProvider
-from quantagent.tools.universe import builtin_universe_symbols
+from quantagent.tools.universe import load_universe
 
 logger = logging.getLogger(__name__)
 
@@ -83,7 +83,7 @@ class BreadthStore:
         self, provider: AbstractDataProvider, universe: str, period: str = "1y"
     ) -> dict:
         """Fetch ~1y of history for the whole universe and ingest it."""
-        symbols = await asyncio.to_thread(builtin_universe_symbols, universe)
+        symbols = await asyncio.to_thread(load_universe, universe)
         if not symbols:
             raise ValueError(f"No symbols resolved for universe: {universe}")
         total_rows = 0

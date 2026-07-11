@@ -210,7 +210,7 @@ def test_cross_asset_tickers_complete() -> None:
 def _mixed_universe_provider(monkeypatch: pytest.MonkeyPatch) -> SyntheticProvider:
     """Fake sp500 universe of 6 rising + 5 falling symbols (+ ETF proxies)."""
     symbols = [f"S{i}" for i in range(11)]
-    monkeypatch.setattr(breadth_store_mod, "builtin_universe_symbols", lambda name: symbols)
+    monkeypatch.setattr(breadth_store_mod, "load_universe", lambda name: symbols)
     frames = {
         sym: make_ohlcv(trend_close(n=300, drift=0.002 if i < 6 else -0.002))
         for i, sym in enumerate(symbols)
@@ -241,7 +241,7 @@ async def test_new_highs_lows_counts(monkeypatch: pytest.MonkeyPatch) -> None:
 
 async def test_breadth_thrust_turns_bullish(monkeypatch: pytest.MonkeyPatch) -> None:
     symbols = [f"S{i}" for i in range(11)]
-    monkeypatch.setattr(breadth_store_mod, "builtin_universe_symbols", lambda name: symbols)
+    monkeypatch.setattr(breadth_store_mod, "load_universe", lambda name: symbols)
     # All symbols decline for 270 sessions, then rally for the last 30.
     close = list(trend_close(n=270, drift=-0.001)) + list(
         trend_close(n=30, drift=0.003, start=76.0)

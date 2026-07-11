@@ -23,7 +23,7 @@ from quantagent.tools.market_breadth import (
 )
 from quantagent.tools.providers.base import AbstractDataProvider
 from quantagent.tools.sector_analysis import classify_symbols
-from quantagent.tools.technical import detect_support_resistance
+from quantagent.tools.technical import detect_support_resistance, wilder_rsi
 
 logger = logging.getLogger(__name__)
 
@@ -190,20 +190,6 @@ def _mover_rows(
     return pd.DataFrame(rows)
 
 
-def _rsi14(close: pd.Series) -> float | None:
-    """Classic Wilder RSI-14 from a close series."""
-    if len(close) < 15:
-        return None
-    delta = close.diff()
-    gain = delta.clip(lower=0).ewm(alpha=1 / 14, adjust=False).mean()
-    loss = (-delta.clip(upper=0)).ewm(alpha=1 / 14, adjust=False).mean()
-    last_loss = float(loss.iloc[-1])
-    if last_loss == 0:
-        return 100.0
-    rs = float(gain.iloc[-1]) / last_loss
-    return round(100 - 100 / (1 + rs), 4)
-
-
 def _heatmap_value(metric: str, close: pd.Series, volume: pd.Series) -> float | None:
     """Per-symbol heatmap value for the requested metric."""
     if metric == "performance":
@@ -215,7 +201,7 @@ def _heatmap_value(metric: str, close: pd.Series, volume: pd.Series) -> float | 
         avg = float(volume.iloc[-21:-1].mean()) if len(volume) >= 21 else None
         return round(float(volume.iloc[-1]) / avg, 4) if avg else None
     if metric == "rsi":
-        return _rsi14(close)
+        return wilder_rsi(close)
     raise ValueError(f"Unknown heatmap metric: {metric}")
 
 

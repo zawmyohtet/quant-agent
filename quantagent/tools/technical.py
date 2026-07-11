@@ -387,6 +387,24 @@ def _deduplicate_levels(levels: list[float], tolerance: float = 0.01) -> list[fl
     return result
 
 
+def wilder_rsi(close: pd.Series, length: int = 14) -> float | None:
+    """Latest Wilder-smoothed RSI value from a close series.
+
+    Returns:
+        RSI in [0, 100], or None with insufficient data.
+    """
+    if len(close) < length + 1:
+        return None
+    delta = close.diff()
+    gain = delta.clip(lower=0).ewm(alpha=1 / length, adjust=False).mean()
+    loss = (-delta.clip(upper=0)).ewm(alpha=1 / length, adjust=False).mean()
+    last_loss = float(loss.iloc[-1])
+    if last_loss == 0:
+        return 100.0
+    rs = float(gain.iloc[-1]) / last_loss
+    return round(100 - 100 / (1 + rs), 4)
+
+
 # ---------------------------------------------------------------------------
 # Signal generation
 # ---------------------------------------------------------------------------

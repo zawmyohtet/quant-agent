@@ -74,6 +74,6 @@ async def test_update_refreshes_known_symbols() -> None:
 async def test_warm_up_unknown_universe_raises(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(store_mod, "builtin_universe_symbols", lambda name: [])
+    monkeypatch.setattr(store_mod, "load_universe", lambda name: [])
     with pytest.raises(ValueError):
         await BreadthStore().warm_up(_etf_provider(), "sp500")
