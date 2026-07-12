@@ -143,7 +143,7 @@ async def test_screen_stocks_sort_by_missing_field(patched_universe: None) -> No
     assert len(df) == 3
 
 
-def test_tech_frames() -> dict[str, pd.DataFrame]:
+def tech_frames() -> dict[str, pd.DataFrame]:
     momo_volume = np.full(300, 1_000_000.0)
     momo_volume[-1] = 3_000_000.0
     return {
@@ -157,7 +157,7 @@ def tech_provider(monkeypatch: pytest.MonkeyPatch) -> MockProvider:
     monkeypatch.setattr(
         screener, "_fetch_universe_tickers", lambda universe: ["MOMO", "WEAK"]
     )
-    return MockProvider(frames=test_tech_frames())
+    return MockProvider(frames=tech_frames())
 
 
 async def test_screen_technicals_rsi(tech_provider: MockProvider) -> None:

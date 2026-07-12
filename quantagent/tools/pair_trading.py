@@ -52,7 +52,7 @@ def _half_life(spread: pd.Series) -> float | None:
     if len(lagged) < 20:
         return None
     lam, _ = np.polyfit(lagged.to_numpy(), delta.to_numpy(), 1)
-    if lam >= 0:
+    if lam >= 0 or abs(lam) < 1e-12:
         return None
     return round(float(-math.log(2) / lam), 2)
 

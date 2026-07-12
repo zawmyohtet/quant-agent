@@ -156,6 +156,8 @@ Skills are on-demand domain knowledge modules (backtesting, risk management, ind
 
 The **terminal UX, slash-command model, and overall CLI shape** are intentionally inspired by **[deepagents-cli](https://github.com/langchain-ai/deepagents/tree/main/libs/cli)** (the reference Deep Agents terminal experience) and **[OpenCode](https://opencode.ai)**. QuantAgent is a **separate, quant-specialized** codebase that depends on the same SDK—not a fork of the CLI library.
 
+This project also took some inspiration from **[claude-trading-skills](https://github.com/tradermonty/claude-trading-skills)** (trading-focused skill workflows for Claude).
+
 ## License
 
 MIT
