@@ -134,8 +134,8 @@ class TestRunTurn:
             elif isinstance(event, AgentTurnComplete):
                 got_complete = True
 
-        assert got_error, "Expected AgentError event"
-        assert got_complete, "Expected AgentTurnComplete event"
+        assert got_error
+        assert got_complete
 
     @pytest.mark.asyncio
     async def test_run_turn_cancellation_cancels_inner_execute(
@@ -170,6 +170,34 @@ class TestRunTurn:
             if isinstance(ev, AgentTurnComplete):
                 got_complete = True
         assert got_complete is True
+
+    @pytest.mark.asyncio
+    async def test_run_turn_execute_exception(self, runner: AgentRunner) -> None:
+        runner._agent = MagicMock()
+
+        async def _raise_error(msg: str) -> None:
+            raise RuntimeError("stream error")
+
+        with patch.object(runner, "_execute_turn", _raise_error):
+            await runner.run_turn("hi")
+
+        errors = []
+        queue = runner.get_event_queue()
+        while not queue.empty():
+            ev = queue.get_nowait()
+            if isinstance(ev, AgentError):
+                errors.append(ev)
+        assert any("stream error" in e.message for e in errors)
+
+
+class TestExecuteTurn:
+    @pytest.mark.asyncio
+    async def test_execute_turn_without_agent(self, runner: AgentRunner) -> None:
+        runner._agent = None
+        await runner._execute_turn("hello")
+        event = runner.get_event_queue().get_nowait()
+        assert isinstance(event, AgentError)
+        assert "not initialized" in event.message
 
 
 class TestShutdown:
@@ -232,6 +260,12 @@ class TestShutdown:
         mock_checkpointer.close.assert_awaited_once()
         assert runner._checkpointer is None
 
+    @pytest.mark.asyncio
+    async def test_shutdown_no_checkpointer(self, runner: AgentRunner) -> None:
+        runner._checkpointer = None
+        await runner.shutdown()
+        assert runner._current_task is None
+
 
 class TestApplyTokenCounts:
     def test_apply_total_tokens(self, runner: AgentRunner) -> None:
@@ -285,6 +319,23 @@ class TestHandleInterrupts:
 
         mock_cmd.assert_called_once_with(resume={"int-1": [{"type": "approve"}]})
         assert runner._pending_interrupts == {}
+
+    @pytest.mark.asyncio
+    async def test_handle_action_requests(self, runner: AgentRunner) -> None:
+        runner._pending_interrupts = {
+            "int-1": {
+                "value": {
+                    "action_requests": [
+                        {"tool": "fetch", "args": {"symbol": "AAPL"}}
+                    ]
+                }
+            }
+        }
+        with patch.object(
+            runner, "_request_single_approval", return_value=True
+        ), patch("langgraph.types.Command") as mock_cmd:
+            await runner._handle_interrupts()
+        mock_cmd.assert_called_once()
 
 
 class TestRequestSingleApproval:
@@ -369,9 +420,6 @@ class TestSetModel:
         assert "Failed to change model" in event.message
 
 
-
-
-
 class TestProgressSink:
     @pytest.mark.asyncio
     async def test_installed_sink_enqueues_tool_progress(
@@ -388,7 +436,6 @@ class TestProgressSink:
         try:
             with bind_call_id("call-1"):
                 report_progress("warming cache: 100/500")
-            # call_soon_threadsafe schedules onto the loop — yield once.
             await asyncio.sleep(0)
             event = runner.get_event_queue().get_nowait()
             assert isinstance(event, ToolProgress)
@@ -396,3 +443,94 @@ class TestProgressSink:
             assert event.text == "warming cache: 100/500"
         finally:
             set_progress_sink(None)
+
+
+class TestLoadHistory:
+    @pytest.mark.asyncio
+    async def test_load_history_no_agent(self, runner: AgentRunner) -> None:
+        runner._agent = None
+        history = await runner.load_history("thread-1")
+        assert history == []
+
+    @pytest.mark.asyncio
+    async def test_load_history_success(self, runner: AgentRunner) -> None:
+        mock_agent = MagicMock()
+        mock_snapshot = MagicMock()
+        mock_snapshot.values = {"messages": ["msg1", "msg2"]}
+        mock_agent.aget_state = AsyncMock(return_value=mock_snapshot)
+        runner._agent = mock_agent
+
+        history = await runner.load_history("thread-1")
+        assert len(history) == 2
+
+    @pytest.mark.asyncio
+    async def test_load_history_snapshot_none(self, runner: AgentRunner) -> None:
+        mock_agent = MagicMock()
+        mock_agent.aget_state = AsyncMock(return_value=None)
+        runner._agent = mock_agent
+
+        history = await runner.load_history("thread-1")
+        assert history == []
+
+    @pytest.mark.asyncio
+    async def test_load_history_exception(self, runner: AgentRunner) -> None:
+        mock_agent = MagicMock()
+        mock_agent.aget_state = AsyncMock(side_effect=RuntimeError("db error"))
+        runner._agent = mock_agent
+
+        history = await runner.load_history("thread-1")
+        assert history == []
+
+
+class TestDeleteThread:
+    @pytest.mark.asyncio
+    async def test_delete_thread_no_checkpointer(self, runner: AgentRunner) -> None:
+        runner._checkpointer = None
+        await runner.delete_thread("thread-1")
+
+    @pytest.mark.asyncio
+    async def test_delete_thread_success(self, runner: AgentRunner) -> None:
+        mock_checkpointer = AsyncMock()
+        mock_checkpointer.adelete_thread = AsyncMock()
+        runner._checkpointer = mock_checkpointer
+
+        with patch.object(runner.state, "delete_thread") as mock_delete:
+            await runner.delete_thread("thread-1")
+            mock_checkpointer.adelete_thread.assert_awaited_once_with("thread-1")
+            mock_delete.assert_called_once_with("thread-1")
+
+    @pytest.mark.asyncio
+    async def test_delete_thread_exception(self, runner: AgentRunner, caplog: pytest.LogCaptureFixture) -> None:
+        mock_checkpointer = AsyncMock()
+        mock_checkpointer.adelete_thread = AsyncMock(side_effect=RuntimeError("delete fail"))
+        runner._checkpointer = mock_checkpointer
+
+        with patch.object(runner.state, "delete_thread"):
+            await runner.delete_thread("thread-1")
+
+
+class TestStopCurrentTurnTask:
+    @pytest.mark.asyncio
+    async def test_stop_no_task(self, runner: AgentRunner) -> None:
+        runner._current_task = None
+        await runner._stop_current_turn_task()
+
+    @pytest.mark.asyncio
+    async def test_stop_already_done(self, runner: AgentRunner) -> None:
+        done_task = asyncio.create_task(asyncio.sleep(0))
+        await done_task
+        runner._current_task = done_task
+        await runner._stop_current_turn_task()
+
+    @pytest.mark.asyncio
+    async def test_stop_cancels_active(self, runner: AgentRunner) -> None:
+        async def hang() -> None:
+            try:
+                await asyncio.sleep(100.0)
+            except asyncio.CancelledError:
+                raise
+
+        hang_task = asyncio.create_task(hang())
+        runner._current_task = hang_task
+        await runner._stop_current_turn_task()
+        assert hang_task.cancelled()

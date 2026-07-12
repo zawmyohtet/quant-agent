@@ -137,7 +137,8 @@ def _json_dumps(obj: Any) -> str:
 
 async def _with_timeout(coro: Any, timeout: float = _TOOL_TIMEOUT_SEC) -> Any:
     """Wrap an awaitable with a timeout, raising TimeoutError on expiry."""
-    return await asyncio.wait_for(coro, timeout=timeout)
+    async with asyncio.timeout(timeout):
+        return await coro
 
 
 def _bind_provider(func: Any, provider: Any) -> Any:

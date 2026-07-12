@@ -120,13 +120,15 @@ class BreadthStore:
         self, universe: str, field: str = "close", days: int | None = None
     ) -> pd.DataFrame:
         """Load a wide matrix (index=date, columns=symbol) of close or volume."""
-        if field not in ("close", "volume"):
+        _queries = {
+            "close": "SELECT date, symbol, close FROM bars WHERE universe = ? ORDER BY date",
+            "volume": "SELECT date, symbol, volume FROM bars WHERE universe = ? ORDER BY date",
+        }
+        query = _queries.get(field)
+        if query is None:
             raise ValueError(f"Unknown field: {field}")
         async with self._connect() as db:
-            cursor = await db.execute(
-                f"SELECT date, symbol, {field} FROM bars WHERE universe = ? ORDER BY date",
-                (universe,),
-            )
+            cursor = await db.execute(query, (universe,))
             rows = await cursor.fetchall()
         if not rows:
             return pd.DataFrame()

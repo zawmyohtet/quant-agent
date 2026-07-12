@@ -89,7 +89,9 @@ async def run_backtest(
 
 def _portfolio_to_result(pf: vbt.Portfolio, config: BacktestConfig) -> BacktestResult:
     """Convert a vectorbt Portfolio to BacktestResult."""
-    pf.stats()
+    total_return = float(pf.total_return())
+    n_years = len(pf.returns()) / 252
+    cagr = (1 + total_return) ** (1 / n_years) - 1 if n_years > 0 else 0.0
 
     # Max drawdown duration
     mdd = pf.drawdowns.max_duration()
@@ -105,16 +107,16 @@ def _portfolio_to_result(pf: vbt.Portfolio, config: BacktestConfig) -> BacktestR
         symbol=config.symbol,
         strategy=config.strategy,
         period=config.period,
-        cagr=round(float(pf.cagr()), 4),
+        cagr=round(cagr, 4),
         sharpe_ratio=round(float(pf.sharpe_ratio()), 4),
         sortino_ratio=round(float(pf.sortino_ratio()), 4),
         calmar_ratio=round(float(pf.calmar_ratio()), 4),
-        max_drawdown=round(float(pf.max_drawdown()), 4),
+        max_drawdown=round(abs(float(pf.max_drawdown())), 4),
         max_drawdown_duration_days=mdd_days,
         win_rate=round(float(pf.trades.win_rate()), 4),
         total_trades=int(pf.trades.count()),
         profit_factor=round(float(pf.trades.profit_factor()), 4),
-        total_return=round(float(pf.total_return()), 4),
+        total_return=round(total_return, 4),
         annualized_volatility=round(float(pf.annualized_volatility()), 4),
         equity_curve=pf.value(),
         monthly_returns=monthly,

@@ -58,6 +58,9 @@ _TRANSITIONS: dict[str, set[str]] = {
 }
 
 OPEN_STATUSES = ("idea", "entry_ready", "active", "partially_closed")
+_OPEN_TRADES_SQL = (
+    "SELECT * FROM trades WHERE status IN (?,?,?,?) ORDER BY created_at DESC"
+)
 
 
 class TradeIdea(BaseModel):
@@ -258,13 +261,8 @@ async def _compute_excursions(
 
 async def get_open_trades() -> list[TradeIdea]:
     """List all trades not yet closed or invalidated."""
-    placeholders = ",".join("?" for _ in OPEN_STATUSES)
     async with _connect() as db:
-        cursor = await db.execute(
-            f"SELECT * FROM trades WHERE status IN ({placeholders}) "
-            "ORDER BY created_at DESC",
-            OPEN_STATUSES,
-        )
+        cursor = await db.execute(_OPEN_TRADES_SQL, OPEN_STATUSES)
         rows = await cursor.fetchall()
     return [_row_to_trade(r) for r in rows]
 

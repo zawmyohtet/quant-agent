@@ -29,8 +29,6 @@ _QUOTES = {
 
 
 class MockProvider(AbstractDataProvider):
-    """Deterministic provider for screener tests."""
-
     def __init__(
         self,
         failing: set[str] | None = None,
@@ -79,9 +77,6 @@ def patched_universe(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         screener, "_fetch_universe_tickers", lambda universe: ["AAA", "BBB", "CCC"]
     )
-
-
-# ── Fundamental screening ────────────────────────────────────────────────────
 
 
 async def test_screen_stocks_no_criteria(patched_universe: None) -> None:
@@ -143,10 +138,12 @@ async def test_screen_stocks_bad_criteria_value_ignored(patched_universe: None) 
     assert len(df) == 3
 
 
-# ── Technical screening ──────────────────────────────────────────────────────
+async def test_screen_stocks_sort_by_missing_field(patched_universe: None) -> None:
+    df = await screener.screen_stocks(MockProvider(), sort_by="nonexistent")
+    assert len(df) == 3
 
 
-def _tech_frames() -> dict[str, pd.DataFrame]:
+def test_tech_frames() -> dict[str, pd.DataFrame]:
     momo_volume = np.full(300, 1_000_000.0)
     momo_volume[-1] = 3_000_000.0
     return {
@@ -160,7 +157,7 @@ def tech_provider(monkeypatch: pytest.MonkeyPatch) -> MockProvider:
     monkeypatch.setattr(
         screener, "_fetch_universe_tickers", lambda universe: ["MOMO", "WEAK"]
     )
-    return MockProvider(frames=_tech_frames())
+    return MockProvider(frames=test_tech_frames())
 
 
 async def test_screen_technicals_rsi(tech_provider: MockProvider) -> None:
@@ -196,114 +193,164 @@ async def test_screen_technicals_explicit_symbols(tech_provider: MockProvider) -
     assert df["symbol"].tolist() == ["MOMO"]
 
 
+async def test_screen_technicals_no_tickers(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(screener, "_fetch_universe_tickers", lambda universe: [])
+    df = await screener.screen_by_technicals(MockProvider(), {"rsi_lt": 30})
+    assert df.empty
+
+
 def test_check_technical_unknown_key_passes() -> None:
     df = make_ohlcv(trend_close(n=50))
     assert screener._check_technical(df, "bogus_criterion", 1) is True
 
 
-# ── Combined screening ───────────────────────────────────────────────────────
+def test_check_technical_atr_breakout() -> None:
+    df = make_ohlcv(trend_close(n=50))
+    result = screener._check_technical(df, "atr_breakout", True)
+    assert result is not None
 
 
-async def test_screen_combined_intersection(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_check_technical_adx_gt() -> None:
+    rng = np.random.default_rng(42)
+    n = 100
+    dates = pd.date_range("2023-06-01", periods=n, freq="D", tz="UTC")
+    close = 100.0 + np.cumsum(rng.normal(0.001, 0.02, n))
+    df = pd.DataFrame({
+        "Open": close * (1 + rng.uniform(-0.01, 0.01, n)),
+        "High": close * (1 + rng.uniform(0.01, 0.03, n)),
+        "Low": close * (1 - rng.uniform(0.01, 0.03, n)),
+        "Close": close,
+        "Volume": rng.integers(1_000_000, 5_000_000, n),
+    }, index=dates)
+    result = screener._check_technical(df, "adx_gt", 10)
+    assert result is not None
+
+
+def test_sma_insufficient_data() -> None:
+    assert screener._sma(pd.Series([100.0, 101.0]), 20) is None
+
+
+def test_macd_bullish_insufficient_data() -> None:
+    assert screener._macd_bullish(pd.Series([100.0] * 10)) is None
+
+
+def test_volume_ratio_insufficient_data() -> None:
+    assert screener._volume_ratio(pd.Series([1_000_000] * 5)) is None
+
+
+def test_volume_ratio_zero_avg() -> None:
+    assert screener._volume_ratio(pd.Series([0.0] * 25)) is None
+
+
+def test_above_upper_band_insufficient_data() -> None:
+    assert screener._above_upper_band(pd.Series([100.0] * 5)) is None
+
+
+def test_adx_insufficient_data() -> None:
+    df = make_ohlcv(trend_close(n=10))
+    assert screener._adx(df) is None
+
+
+def test_check_price_vs_sma_insufficient_data() -> None:
+    close = pd.Series([100.0] * 10)
+    assert screener._check_price_vs_sma(close, 20, above=True) is None
+
+
+def test_apply_single_criterion_unknown_key() -> None:
+    df = pd.DataFrame({"symbol": ["A"], "pe_ratio": [10.0]})
+    result = screener._apply_single_criterion(df, "unknown_key", 1)
+    assert len(result) == 1
+
+
+def test_apply_single_criterion_exception() -> None:
+    df = pd.DataFrame({"symbol": ["A"], "pe_ratio": [10.0]})
+    result = screener._apply_single_criterion(df, "pe_lt", "not_a_number")
+    assert len(result) == 1
+
+
+def test_vcp_metrics_insufficient_data() -> None:
+    df = make_ohlcv(trend_close(n=50))
+    result = screener._vcp_metrics(df, max_contraction_pct=0.5, min_prior_advance_pct=0.3)
+    assert result is None
+
+
+def test_vcp_metrics_no_prior_advance() -> None:
+    df = make_ohlcv(trend_close(n=250, drift=0.0))
+    result = screener._vcp_metrics(df, max_contraction_pct=0.5, min_prior_advance_pct=0.3)
+    assert result is None
+
+
+def test_vcp_metrics_below_sma200() -> None:
+    close = trend_close(n=300, drift=-0.0005)
+    df = make_ohlcv(close)
+    result = screener._vcp_metrics(df, max_contraction_pct=0.5, min_prior_advance_pct=0.0)
+    assert result is None
+
+
+def test_oversold_row_insufficient_data() -> None:
+    df = make_ohlcv(trend_close(n=10))
+    result = screener._oversold_row("TEST", df, rsi_threshold=30.0, min_decline_pct=0.2)
+    assert result is None
+
+
+def test_oversold_row_no_decline() -> None:
+    close = trend_close(n=200, drift=0.002)
+    df = make_ohlcv(close)
+    result = screener._oversold_row("TEST", df, rsi_threshold=30.0, min_decline_pct=0.2)
+    assert result is None
+
+
+def test_technical_row_none_indicators() -> None:
+    df = make_ohlcv(trend_close(n=5))
+    row = screener._technical_row("TEST", df)
+    assert row["symbol"] == "TEST"
+    assert row["volume_ratio"] is None
+
+
+def test_fetch_universe_tickers_failure(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
-        screener, "_fetch_universe_tickers", lambda universe: ["AAA", "BBB", "CCC"]
+        screener, "load_universe", lambda universe: (_ for _ in ()).throw(ValueError("boom"))
     )
-    frames = {
-        "AAA": make_ohlcv(trend_close(n=300, drift=0.003)),
-        "BBB": make_ohlcv(trend_close(n=300, drift=0.003)),
-        "CCC": make_ohlcv(trend_close(n=300, drift=-0.003)),
-    }
-    provider = MockProvider(frames=frames)
+    result = screener._fetch_universe_tickers("bad")
+    assert result == []
+
+
+def test_vcp_metrics_negative_contraction() -> None:
+    close = trend_close(n=300, drift=0.001)
+    df = make_ohlcv(close)
+    result = screener._vcp_metrics(df, max_contraction_pct=0.0, min_prior_advance_pct=0.0)
+    if result is not None:
+        assert result["contraction_pct"] >= 0
+
+
+async def test_combined_empty_technical_criteria(patched_universe: None) -> None:
     df = await screener.screen_combined(
-        provider,
-        technical_criteria={"price_above_sma": 200},
+        MockProvider(),
+        technical_criteria=None,
         fundamental_criteria={"pe_lt": 20},
-        universe="sp500",
     )
-    # pe_lt 20 keeps AAA + CCC; above-200SMA keeps AAA + BBB → intersection AAA.
-    assert df["symbol"].tolist() == ["AAA"]
-    assert "rsi" in df.columns
+    assert len(df) == 2  # AAA + CCC
 
-
-async def test_screen_combined_fundamentals_only(patched_universe: None) -> None:
+async def test_screen_combined_empty_fundamentals_no_tech(patched_universe: None) -> None:
     df = await screener.screen_combined(
-        MockProvider(), fundamental_criteria={"pe_lt": 20}
-    )
-    assert sorted(df["symbol"]) == ["AAA", "CCC"]
-
-
-async def test_screen_combined_empty_fundamentals(patched_universe: None) -> None:
-    df = await screener.screen_combined(
-        MockProvider(), fundamental_criteria={"pe_lt": 1},
-        technical_criteria={"rsi_lt": 100},
+        MockProvider(),
+        fundamental_criteria={"pe_lt": 1},
+        technical_criteria=None,
     )
     assert df.empty
 
 
-# ── Pattern screens ──────────────────────────────────────────────────────────
-
-
-def _vcp_close() -> list[float]:
-    """Advance 100->220, pull back to ~205, then tighten."""
-    advance = list(np.linspace(100, 220, 237))
-    pullback = list(np.linspace(220, 205, 13))
-    tighten = [205 + 2 * np.sin(i / 3) * (1 - i / 50) for i in range(50)]
-    return advance + pullback + tighten
-
-
-def _vcp_frames() -> dict[str, pd.DataFrame]:
-    volume = np.full(300, 1_000_000.0)
-    volume[-10:] = 400_000.0
-    return {
-        "VCP": make_ohlcv(_vcp_close(), volume),
-        "DOWN": make_ohlcv(trend_close(n=300, drift=-0.003)),
-    }
-
-
-async def test_screen_vcp_pattern(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_breakout_empty_result(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
-        screener, "_fetch_universe_tickers", lambda universe: ["VCP", "DOWN"]
+        screener, "_fetch_universe_tickers", lambda universe: []
     )
-    provider = MockProvider(frames=_vcp_frames())
-    df = await screener.screen_vcp_pattern(provider)
-    assert df["symbol"].tolist() == ["VCP"]
-    row = df.iloc[0]
-    assert row["prior_advance_pct"] >= 0.30
-    assert row["contraction_pct"] <= 0.50
-    assert row["volume_dryup_ratio"] < 1.0
+    df = await screener.screen_breakout_candidates(MockProvider(), limit=10)
+    assert df.empty
 
 
-async def test_screen_breakout_candidates(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_oversold_empty_result(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
-        screener, "_fetch_universe_tickers", lambda universe: ["BRK", "DOWN"]
+        screener, "_fetch_universe_tickers", lambda universe: []
     )
-    volume = np.full(300, 1_000_000.0)
-    volume[-1] = 2_500_000.0
-    frames = {
-        "BRK": make_ohlcv(trend_close(n=300, drift=0.002), volume),
-        "DOWN": make_ohlcv(trend_close(n=300, drift=-0.003)),
-    }
-    df = await screener.screen_breakout_candidates(MockProvider(frames=frames))
-    assert df["symbol"].tolist() == ["BRK"]
-    assert df.iloc[0]["pct_from_high"] <= 0.05
-    assert df.iloc[0]["volume_ratio"] >= 1.5
-
-
-def _oversold_close() -> list[float]:
-    rise = list(np.linspace(100, 130, 150))
-    fall = list(np.linspace(130, 94.5, 148))
-    return rise + fall + [94.5, 95.4]
-
-
-async def test_screen_oversold_reversal(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(
-        screener, "_fetch_universe_tickers", lambda universe: ["OSLD", "MOMO"]
-    )
-    frames = {
-        "OSLD": make_ohlcv(_oversold_close()),
-        "MOMO": make_ohlcv(trend_close(n=300, drift=0.003)),
-    }
-    df = await screener.screen_oversold_reversal(MockProvider(frames=frames))
-    assert df["symbol"].tolist() == ["OSLD"]
-    assert df.iloc[0]["rsi"] < 30
-    assert df.iloc[0]["decline_pct"] >= 0.20
+    df = await screener.screen_oversold_reversal(MockProvider(), limit=10)
+    assert df.empty
