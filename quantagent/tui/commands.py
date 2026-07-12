@@ -28,6 +28,11 @@ class SlashCommand:
     handler: Callable[[list[str], QuantAgentApp], None | Awaitable[None]]
     aliases: list[str] = field(default_factory=list)
     arg_completer: Callable[[], list[str]] | None = None
+    category: str = "General"
+
+
+# Display order for command categories in /help and autocomplete.
+CATEGORY_ORDER = ["Session", "Config", "Analysis", "Workflows & Reports", "Data"]
 
 
 def _handle_model(args: list[str], app: QuantAgentApp) -> None:
@@ -314,10 +319,9 @@ def _handle_help(args: list[str], app: QuantAgentApp) -> None:
             _system(app, f"Unknown command: /{name}")
         return
 
-    lines = ["**Available commands:**\n"]
-    for cmd in REGISTRY:
-        lines.append(f"  `/{cmd.name}` — {cmd.description}")
-    _system(app, "\n".join(lines))
+    from quantagent.tui.widgets.help_screen import HelpScreen
+
+    app.push_screen(HelpScreen())
 
 
 def _system(app: QuantAgentApp, text: str) -> None:
@@ -331,92 +335,186 @@ def _refresh_status(app: QuantAgentApp) -> None:
 
 
 REGISTRY: list[SlashCommand] = [
-    SlashCommand("model", "/model <provider:model>", "Set LLM model.", _handle_model),
-    SlashCommand("provider", "/provider <name>", "Set stock data provider.", _handle_provider),
+    # Session
+    SlashCommand(
+        "new", "/new", "Start fresh conversation thread.", _handle_new, category="Session"
+    ),
+    SlashCommand(
+        "threads", "/threads", "Open thread selector modal.", _handle_threads, category="Session"
+    ),
+    SlashCommand("clear", "/clear", "Clear visible messages.", _handle_clear, category="Session"),
+    SlashCommand(
+        "export",
+        "/export [path]",
+        "Export current thread as Markdown.",
+        _handle_export,
+        category="Session",
+    ),
+    SlashCommand(
+        "stop",
+        "/stop",
+        "Cancel currently running agent turn.",
+        _handle_stop,
+        category="Session",
+    ),
+    SlashCommand(
+        "retry", "/retry", "Re-submit last user message.", _handle_retry, category="Session"
+    ),
+    SlashCommand(
+        "help", "/help [command]", "Show available commands.", _handle_help, category="Session"
+    ),
+    # Config
+    SlashCommand(
+        "model", "/model <provider:model>", "Set LLM model.", _handle_model, category="Config"
+    ),
+    SlashCommand(
+        "provider",
+        "/provider <name>",
+        "Set stock data provider.",
+        _handle_provider,
+        category="Config",
+    ),
     SlashCommand(
         "theme",
         "/theme [name]",
         "List or switch the UI theme.",
         _handle_theme,
         arg_completer=_theme_names,
+        category="Config",
     ),
     SlashCommand(
-        "apikey", "/apikey <provider> <key>", "Save API key to ~/.quantagent/.env.", _handle_apikey
+        "apikey",
+        "/apikey <provider> <key>",
+        "Save API key to ~/.quantagent/.env.",
+        _handle_apikey,
+        category="Config",
     ),
-    SlashCommand("new", "/new", "Start fresh conversation thread.", _handle_new),
-    SlashCommand("threads", "/threads", "Open thread selector modal.", _handle_threads),
-    SlashCommand("clear", "/clear", "Clear visible messages.", _handle_clear),
-    SlashCommand("export", "/export [path]", "Export current thread as Markdown.", _handle_export),
-    SlashCommand("stop", "/stop", "Cancel currently running agent turn.", _handle_stop),
-    SlashCommand("retry", "/retry", "Re-submit last user message.", _handle_retry),
-    SlashCommand("memory", "/memory", "Print QUANTAGENT.md content.", _handle_memory),
-    SlashCommand("approve", "/approve", "Pre-approve next tool call.", _handle_approve),
     SlashCommand(
-        "analyze", "/analyze <SYMBOL>", "Perform full analysis of a stock.", _handle_analyze
+        "memory", "/memory", "Print QUANTAGENT.md content.", _handle_memory, category="Config"
+    ),
+    SlashCommand(
+        "approve", "/approve", "Pre-approve next tool call.", _handle_approve, category="Config"
+    ),
+    # Analysis
+    SlashCommand(
+        "analyze",
+        "/analyze <SYMBOL>",
+        "Perform full analysis of a stock.",
+        _handle_analyze,
+        category="Analysis",
     ),
     SlashCommand(
         "backtest",
         "/backtest <SYMBOL> <strategy>",
         "Run a backtest for a symbol using a strategy.",
         _handle_backtest,
-    ),
-    SlashCommand(
-        "screen", "/screen <criteria>", "Screen stocks matching criteria.", _handle_screen
-    ),
-    SlashCommand(
-        "market", "/market", "Market overview: regime, breadth, timing, exposure.", _handle_market
-    ),
-    SlashCommand(
-        "sector",
-        "/sector [name]",
-        "Sector analysis (all sectors, or one by name).",
-        _handle_sector,
-    ),
-    SlashCommand(
-        "heatmap",
-        "/heatmap [metric]",
-        "Market heatmap (performance/volume/volatility/rsi).",
-        _handle_heatmap,
-    ),
-    SlashCommand(
-        "warm",
-        "/warm [universe]",
-        "Warm breadth cache (sp500/nasdaq100/sector_etfs).",
-        _handle_warm,
-    ),
-    SlashCommand(
-        "report",
-        "/report <type> [target]",
-        "Generate a report (market/sector/stock/portfolio/screening).",
-        _handle_report,
-    ),
-    SlashCommand(
-        "workflow", "/workflow <name> [target]", "Run a predefined workflow.", _handle_workflow
-    ),
-    SlashCommand("workflows", "/workflows", "List available workflows.", _handle_workflows),
-    SlashCommand(
-        "journal",
-        "/journal [add <SYMBOL> <thesis>]",
-        "View trade journal, or log a trade idea.",
-        _handle_journal,
-    ),
-    SlashCommand(
-        "riskgate", "/riskgate", "Check circuit breaker & discipline status.", _handle_riskgate
-    ),
-    SlashCommand(
-        "universe", "/universe <name>", "Switch active screening universe.", _handle_universe
-    ),
-    SlashCommand(
-        "universes", "/universes", "List available screening universes.", _handle_universes
+        category="Analysis",
     ),
     SlashCommand(
         "compare",
         "/compare <SYM1> <SYM2> ...",
         "Compare multiple stocks.",
         _handle_compare,
+        category="Analysis",
     ),
-    SlashCommand("help", "/help [command]", "Show available commands.", _handle_help),
+    SlashCommand(
+        "screen",
+        "/screen <criteria>",
+        "Screen stocks matching criteria.",
+        _handle_screen,
+        category="Analysis",
+    ),
+    SlashCommand(
+        "market",
+        "/market",
+        "Market overview: regime, breadth, timing, exposure.",
+        _handle_market,
+        category="Analysis",
+    ),
+    SlashCommand(
+        "sector",
+        "/sector [name]",
+        "Sector analysis (all sectors, or one by name).",
+        _handle_sector,
+        category="Analysis",
+    ),
+    SlashCommand(
+        "heatmap",
+        "/heatmap [metric]",
+        "Market heatmap (performance/volume/volatility/rsi).",
+        _handle_heatmap,
+        category="Analysis",
+    ),
+    SlashCommand(
+        "riskgate",
+        "/riskgate",
+        "Check circuit breaker & discipline status.",
+        _handle_riskgate,
+        category="Analysis",
+    ),
+    # Workflows & Reports
+    SlashCommand(
+        "workflow",
+        "/workflow <name> [target]",
+        "Run a predefined workflow.",
+        _handle_workflow,
+        category="Workflows & Reports",
+    ),
+    SlashCommand(
+        "workflows",
+        "/workflows",
+        "List available workflows.",
+        _handle_workflows,
+        category="Workflows & Reports",
+    ),
+    SlashCommand(
+        "report",
+        "/report <type> [target]",
+        "Generate a report (market/sector/stock/portfolio/screening).",
+        _handle_report,
+        category="Workflows & Reports",
+    ),
+    SlashCommand(
+        "journal",
+        "/journal [add <SYMBOL> <thesis>]",
+        "View trade journal, or log a trade idea.",
+        _handle_journal,
+        category="Workflows & Reports",
+    ),
+    # Data
+    SlashCommand(
+        "universe",
+        "/universe <name>",
+        "Switch active screening universe.",
+        _handle_universe,
+        category="Data",
+    ),
+    SlashCommand(
+        "universes",
+        "/universes",
+        "List available screening universes.",
+        _handle_universes,
+        category="Data",
+    ),
+    SlashCommand(
+        "warm",
+        "/warm [universe]",
+        "Warm breadth cache (sp500/nasdaq100/sector_etfs).",
+        _handle_warm,
+        category="Data",
+    ),
 ]
+
+
+def commands_by_category() -> dict[str, list[SlashCommand]]:
+    """Group registered commands by category, in display order."""
+    grouped: dict[str, list[SlashCommand]] = {}
+    known = [c for c in CATEGORY_ORDER if any(cmd.category == c for cmd in REGISTRY)]
+    extra = sorted({cmd.category for cmd in REGISTRY} - set(CATEGORY_ORDER))
+    for category in known + extra:
+        grouped[category] = [cmd for cmd in REGISTRY if cmd.category == category]
+    return grouped
+
 
 _COMMAND_MAP: dict[str, SlashCommand] = {}
 for _cmd in REGISTRY:

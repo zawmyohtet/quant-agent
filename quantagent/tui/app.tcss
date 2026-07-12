@@ -57,3 +57,53 @@ ChatInput {
 #chat-input-dropdown > ListItem.-highlight {
     background: $primary 40%;
 }
+
+/* Help modal */
+
+HelpScreen {
+    align: center middle;
+}
+
+#help-dialog {
+    width: 84;
+    max-width: 95%;
+    height: 80%;
+    max-height: 42;
+    border: round $primary;
+    background: $surface;
+    padding: 1 2;
+    border-title-color: $accent;
+    border-title-style: bold;
+}
+
+#help-body {
+    height: 1fr;
+}
+
+.help-category {
+    text-style: bold;
+    color: $accent;
+    margin-top: 1;
+}
+
+.help-grid {
+    layout: grid;
+    grid-size: 2;
+    grid-columns: 34 1fr;
+    height: auto;
+}
+
+.help-usage {
+    color: $foreground;
+}
+
+.help-description {
+    color: $text-muted;
+}
+
+.help-footer {
+    height: 1;
+    color: $text-muted;
+    text-align: center;
+    margin-top: 1;
+}

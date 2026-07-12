@@ -63,6 +63,7 @@ class QuantAgentApp(App):
 
     CSS_PATH = Path(__file__).with_suffix(".tcss")
     BINDINGS = [
+        Binding("f1", "help", "Help"),
         Binding("ctrl+c", "quit", "Quit"),
         Binding("ctrl+t", "open_threads", "Threads"),
         Binding("ctrl+n", "new_thread", "New thread"),
@@ -240,6 +241,11 @@ class QuantAgentApp(App):
         self.query_one(_ID_STATUS_BAR, StatusBar).refresh_state()
         if self.runner:
             self.run_worker(self.runner.run_turn(text), exclusive=True)
+
+    def action_help(self) -> None:
+        from quantagent.tui.widgets.help_screen import HelpScreen
+
+        self.push_screen(HelpScreen())
 
     def action_open_threads(self) -> None:
         self.push_screen(ThreadSelectorScreen())

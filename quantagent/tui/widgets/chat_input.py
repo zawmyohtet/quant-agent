@@ -155,7 +155,7 @@ class ChatInput(Vertical):
         ]
         return [
             Suggestion(
-                label=f"[b]/{cmd.name}[/b] — {cmd.description}",
+                label=f"[b]/{cmd.name}[/b] — {cmd.description} [dim]({cmd.category})[/dim]",
                 insert_text=f"/{cmd.name} ",
             )
             for cmd in prefix_matches + substr_matches
