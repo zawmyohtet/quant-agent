@@ -5,7 +5,7 @@ from typing import Any
 import pytest
 
 from quantagent.tui.commands import REGISTRY
-from quantagent.tui.widgets.chat_input import ChatInput
+from quantagent.tui.widgets.chat_input import ChatInput, Suggestion
 
 
 class FakeDropdown:
@@ -25,6 +25,15 @@ class FakeDropdown:
     @property
     def children(self) -> list[object]:
         return self._items
+
+
+def _insert_texts(widget: ChatInput) -> list[str]:
+    return [item.suggestion.insert_text for item in widget._dropdown.children]
+
+
+def _command_names(widget: ChatInput) -> list[str]:
+    # Command suggestions insert "/<name> "; extract the name token.
+    return [text.strip().lstrip("/") for text in _insert_texts(widget)]
 
 
 class TestChatInputDropdown:
@@ -71,19 +80,19 @@ class TestChatInputDropdown:
         # No aliases are registered by default, but this guards against regression
         widget._update_dropdown("/h")
         assert widget._dropdown.display is True
-        assert any(getattr(item, "command_name", "") == "help" for item in widget._dropdown.children)
+        assert "help" in _command_names(widget)
 
     def test_matches_substring(self, widget: ChatInput) -> None:
         # No command starts with "flow", but workflow/workflows contain it
         widget._update_dropdown("/flow")
         assert widget._dropdown.display is True
-        names = [getattr(item, "command_name", "") for item in widget._dropdown.children]
+        names = _command_names(widget)
         assert "workflow" in names
         assert "workflows" in names
 
     def test_prefix_matches_rank_before_substring_matches(self, widget: ChatInput) -> None:
         widget._update_dropdown("/re")
-        names = [getattr(item, "command_name", "") for item in widget._dropdown.children]
+        names = _command_names(widget)
         prefix_names = [n for n in names if n.startswith("re")]
         substr_names = [n for n in names if not n.startswith("re")]
         assert prefix_names, "expected prefix matches for /re"
@@ -95,6 +104,36 @@ class TestChatInputDropdown:
         widget._dropdown.index = 3
         widget._update_dropdown("/m")
         assert widget._dropdown.index is None
+
+
+class TestArgumentAutocomplete:
+    """Unit tests for first-argument completion (e.g. /theme <name>)."""
+
+    @pytest.fixture
+    def widget(self) -> ChatInput:
+        w = ChatInput()
+        w._dropdown = FakeDropdown()  # type: ignore[assignment]
+        return w
+
+    def test_shows_all_values_after_command(self, widget: ChatInput) -> None:
+        widget._update_dropdown("/theme ")
+        assert widget._dropdown.display is True
+        assert "/theme nord " in _insert_texts(widget)
+
+    def test_filters_by_partial_argument(self, widget: ChatInput) -> None:
+        widget._update_dropdown("/theme nor")
+        assert widget._dropdown.display is True
+        texts = _insert_texts(widget)
+        assert "/theme nord " in texts
+        assert all("nor" in text for text in texts)
+
+    def test_hides_for_unknown_value(self, widget: ChatInput) -> None:
+        widget._update_dropdown("/theme zzz")
+        assert widget._dropdown.display is False
+
+    def test_hides_after_first_argument_complete(self, widget: ChatInput) -> None:
+        widget._update_dropdown("/theme nord extra")
+        assert widget._dropdown.display is False
 
 
 class TestChatInputAutocomplete:
@@ -113,7 +152,7 @@ class TestChatInputAutocomplete:
             # Simulate user having typed "/ana" (cursor lands at end after first value set)
             widget._input.value = "/ana"
             assert widget._input.cursor_position == 4
-            widget._apply_autocomplete("analyze")
+            widget._apply_autocomplete(Suggestion(label="/analyze", insert_text="/analyze "))
             assert widget._input.value == "/analyze "
             assert widget._input.cursor_position == len("/analyze ")
 
@@ -129,7 +168,7 @@ class TestChatInputAutocomplete:
             widget = app.query_one(ChatInput)
             widget._input.value = "/sc"
             assert widget._input.cursor_position == 3
-            widget._apply_autocomplete("screen")
+            widget._apply_autocomplete(Suggestion(label="/screen", insert_text="/screen "))
             assert widget._input.value == "/screen "
             assert widget._input.cursor_position == len("/screen ")
 

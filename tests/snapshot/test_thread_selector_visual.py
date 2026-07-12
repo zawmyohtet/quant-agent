@@ -1,19 +1,21 @@
 """Snapshot tests for ThreadSelectorScreen visual states."""
+
 from __future__ import annotations
 
-from textual.app import App, ComposeResult
+from textual.app import ComposeResult
 
 from quantagent.tui.widgets.thread_selector import ThreadSelectorScreen
+from tests.snapshot._base import SnapshotApp
 
 
-class _ThreadSelectorEmptyApp(App):
+class _ThreadSelectorEmptyApp(SnapshotApp):
     """Minimal app showing ThreadSelectorScreen with no threads."""
 
     def compose(self) -> ComposeResult:
         yield ThreadSelectorScreen()
 
 
-class _ThreadSelectorWithThreadsApp(App):
+class _ThreadSelectorWithThreadsApp(SnapshotApp):
     """Minimal app showing ThreadSelectorScreen populated with sample threads."""
 
     def compose(self) -> ComposeResult:

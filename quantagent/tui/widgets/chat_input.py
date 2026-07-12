@@ -11,7 +11,7 @@ from textual.message import Message
 from textual.reactive import reactive
 from textual.widgets import Input, ListItem, ListView, Static
 
-from quantagent.tui.commands import REGISTRY
+from quantagent.tui.commands import REGISTRY, find_command
 
 logger = logging.getLogger(__name__)
 
@@ -21,7 +21,7 @@ class Suggestion:
     """A single autocomplete suggestion."""
 
     label: str
-    command_name: str
+    insert_text: str
 
 
 class _CommandInput(Input):
@@ -99,8 +99,8 @@ class ChatInput(Vertical):
             if self._dropdown.index is None:
                 return False
             selected = self._dropdown.highlighted_child
-            if selected is not None and hasattr(selected, "command_name"):
-                self._apply_autocomplete(selected.command_name)
+            if selected is not None and hasattr(selected, "suggestion"):
+                self._apply_autocomplete(selected.suggestion)
             self._dropdown.display = False
             return True
         if key == "tab":
@@ -113,23 +113,35 @@ class ChatInput(Vertical):
 
     def on_list_view_selected(self, event: ListView.Selected) -> None:
         item = event.item
-        if hasattr(item, "command_name"):
-            self._apply_autocomplete(item.command_name)
+        if hasattr(item, "suggestion"):
+            self._apply_autocomplete(item.suggestion)
         self._dropdown.display = False
 
-    def _apply_autocomplete(self, command_name: str) -> None:
-        """Insert the completed command and move cursor to the end."""
-        self._input.value = f"/{command_name} "
+    def _apply_autocomplete(self, suggestion: Suggestion) -> None:
+        """Insert the completed text and move cursor to the end."""
+        self._input.value = suggestion.insert_text
         self._input.focus()
         self._input.cursor_position = len(self._input.value)
 
     def _update_dropdown(self, text: str) -> None:
         body = text[1:]
         if " " in body:
-            # Command token complete; user is typing arguments.
+            suggestions = self._arg_suggestions(body)
+        else:
+            suggestions = self._command_suggestions(body.lower())
+        if not suggestions:
             self._dropdown.display = False
             return
-        prefix = body.lower()
+
+        self._dropdown.clear()
+        for suggestion in suggestions:
+            item = ListItem(Static(suggestion.label, markup=True))
+            item.suggestion = suggestion  # type: ignore[attr-defined]
+            self._dropdown.append(item)
+        self._dropdown.index = None
+        self._dropdown.display = True
+
+    def _command_suggestions(self, prefix: str) -> list[Suggestion]:
         prefix_matches = [
             cmd
             for cmd in REGISTRY
@@ -141,28 +153,42 @@ class ChatInput(Vertical):
             if cmd not in prefix_matches
             and (prefix in cmd.name or any(prefix in alias for alias in cmd.aliases))
         ]
-        matches = prefix_matches + substr_matches
-        if not matches:
-            self._dropdown.display = False
-            return
+        return [
+            Suggestion(
+                label=f"[b]/{cmd.name}[/b] — {cmd.description}",
+                insert_text=f"/{cmd.name} ",
+            )
+            for cmd in prefix_matches + substr_matches
+        ]
 
-        self._dropdown.clear()
-        for cmd in matches:
-            item = ListItem(Static(f"[b]/{cmd.name}[/b] — {cmd.description}", markup=True))
-            item.command_name = cmd.name  # type: ignore[attr-defined]
-            self._dropdown.append(item)
-        self._dropdown.index = None
-        self._dropdown.display = True
+    def _arg_suggestions(self, body: str) -> list[Suggestion]:
+        """Complete the first argument of commands that provide values."""
+        name, _, rest = body.partition(" ")
+        cmd = find_command(name.lower())
+        if cmd is None or cmd.arg_completer is None or " " in rest:
+            return []
+        partial = rest.lower()
+        values = cmd.arg_completer()
+        matches = [v for v in values if v.startswith(partial)] + [
+            v for v in values if partial in v and not v.startswith(partial)
+        ]
+        return [
+            Suggestion(
+                label=f"[b]{value}[/b]",
+                insert_text=f"/{cmd.name} {value} ",
+            )
+            for value in matches
+        ]
 
     def _autocomplete(self) -> None:
         if not self._dropdown.display:
             return
         selected = self._dropdown.highlighted_child
-        if selected and hasattr(selected, "command_name"):
-            self._apply_autocomplete(selected.command_name)
+        if selected and hasattr(selected, "suggestion"):
+            self._apply_autocomplete(selected.suggestion)
             self._dropdown.display = False
         elif self._dropdown.children:
             first = self._dropdown.children[0]
-            if hasattr(first, "command_name"):
-                self._apply_autocomplete(first.command_name)
+            if hasattr(first, "suggestion"):
+                self._apply_autocomplete(first.suggestion)
                 self._dropdown.display = False

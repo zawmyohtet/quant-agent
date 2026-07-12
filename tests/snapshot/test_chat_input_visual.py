@@ -1,20 +1,22 @@
 """Snapshot tests for ChatInput visual states."""
+
 from __future__ import annotations
 
-from textual.app import App, ComposeResult
+from textual.app import ComposeResult
 from textual.containers import Vertical
 
 from quantagent.tui.widgets.chat_input import ChatInput
+from tests.snapshot._base import SnapshotApp
 
 
-class _ChatInputIdleApp(App):
+class _ChatInputIdleApp(SnapshotApp):
     """Minimal app showing ChatInput in idle state."""
 
     def compose(self) -> ComposeResult:
         yield Vertical(ChatInput(id="chat-input"))
 
 
-class _ChatInputWithTextApp(App):
+class _ChatInputWithTextApp(SnapshotApp):
     """Minimal app showing ChatInput with user-typed text."""
 
     def compose(self) -> ComposeResult:
@@ -25,7 +27,7 @@ class _ChatInputWithTextApp(App):
         chat_input._input.value = "analysis AAPL"
 
 
-class _ChatInputAutocompleteApp(App):
+class _ChatInputAutocompleteApp(SnapshotApp):
     """Minimal app showing ChatInput with autocomplete dropdown visible."""
 
     def compose(self) -> ComposeResult:

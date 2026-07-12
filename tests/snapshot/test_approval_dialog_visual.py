@@ -1,14 +1,16 @@
 """Snapshot tests for ApprovalDialog visual states."""
+
 from __future__ import annotations
 
 import asyncio
 
-from textual.app import App, ComposeResult
+from textual.app import ComposeResult
 
 from quantagent.tui.widgets.approval_dialog import ApprovalDialog
+from tests.snapshot._base import SnapshotApp
 
 
-class _ApprovalDialogApp(App):
+class _ApprovalDialogApp(SnapshotApp):
     """Minimal app showing ApprovalDialog with sample tool call."""
 
     def compose(self) -> ComposeResult:

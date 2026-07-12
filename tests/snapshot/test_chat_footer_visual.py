@@ -1,15 +1,17 @@
 """Snapshot tests for ChatFooter visual states."""
+
 from __future__ import annotations
 
-from textual.app import App, ComposeResult
+from textual.app import ComposeResult
 from textual.containers import Vertical
 
 from quantagent.tui.config import QuantAgentConfig
 from quantagent.tui.session_state import SessionState
 from quantagent.tui.widgets.chat_footer import ChatFooter
+from tests.snapshot._base import SnapshotApp
 
 
-class _IdleFooterApp(App):
+class _IdleFooterApp(SnapshotApp):
     """Minimal app showing ChatFooter in idle state."""
 
     def compose(self) -> ComposeResult:

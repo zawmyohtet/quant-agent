@@ -28,6 +28,7 @@ class SlashCommand:
     description: str
     handler: Callable[[list[str], QuantAgentApp], None | Awaitable[None]]
     aliases: list[str] = field(default_factory=list)
+    arg_completer: Callable[[], list[str]] | None = None
 
 
 def _handle_model(args: list[str], app: QuantAgentApp) -> None:
@@ -50,6 +51,33 @@ def _handle_provider(args: list[str], app: QuantAgentApp) -> None:
     app.state.config.save()
     _system(app, f"Provider set to {provider}")
     _refresh_status(app)
+
+
+def _handle_theme(args: list[str], app: QuantAgentApp) -> None:
+    available = sorted(app.available_themes)
+    if not args:
+        lines = ["**Available themes:**\n"]
+        for name in available:
+            marker = " (current)" if name == app.theme else ""
+            lines.append(f"  `{name}`{marker}")
+        lines.append("\nUsage: /theme <name>")
+        _system(app, "\n".join(lines))
+        return
+    name = args[0]
+    if name not in app.available_themes:
+        _system(
+            app,
+            f"Unknown theme: {name}. Valid themes: {', '.join(available)}",
+        )
+        return
+    app.theme = name
+    _system(app, f"Theme set to {name}")
+
+
+def _theme_names() -> list[str]:
+    from textual.theme import BUILTIN_THEMES
+
+    return sorted(BUILTIN_THEMES)
 
 
 def _handle_apikey(args: list[str], app: QuantAgentApp) -> None:
@@ -197,15 +225,12 @@ async def _handle_journal(args: list[str], app: QuantAgentApp) -> None:
             f"{thesis}. Ask me for the entry plan, target, and stop if needed."
         )
         return
-    await app._submit_user_message(
-        "Show my trade journal: open trades, recent history, and stats."
-    )
+    await app._submit_user_message("Show my trade journal: open trades, recent history, and stats.")
 
 
 async def _handle_riskgate(args: list[str], app: QuantAgentApp) -> None:
     await app._submit_user_message(
-        "Check the risk circuit breaker and summarize my current trading "
-        "discipline status."
+        "Check the risk circuit breaker and summarize my current trading discipline status."
     )
 
 
@@ -222,9 +247,7 @@ async def _handle_workflow(args: list[str], app: QuantAgentApp) -> None:
 
 
 async def _handle_workflows(args: list[str], app: QuantAgentApp) -> None:
-    await app._submit_user_message(
-        "List the available analysis workflows and what each one does."
-    )
+    await app._submit_user_message("List the available analysis workflows and what each one does.")
 
 
 async def _handle_report(args: list[str], app: QuantAgentApp) -> None:
@@ -315,6 +338,13 @@ REGISTRY: list[SlashCommand] = [
     SlashCommand("model", "/model <provider:model>", "Set LLM model.", _handle_model),
     SlashCommand("provider", "/provider <name>", "Set stock data provider.", _handle_provider),
     SlashCommand(
+        "theme",
+        "/theme [name]",
+        "List or switch the UI theme.",
+        _handle_theme,
+        arg_completer=_theme_names,
+    ),
+    SlashCommand(
         "apikey", "/apikey <provider> <key>", "Save API key to ~/.quantagent/.env.", _handle_apikey
     ),
     SlashCommand("new", "/new", "Start fresh conversation thread.", _handle_new),
@@ -367,9 +397,7 @@ REGISTRY: list[SlashCommand] = [
     SlashCommand(
         "workflow", "/workflow <name> [target]", "Run a predefined workflow.", _handle_workflow
     ),
-    SlashCommand(
-        "workflows", "/workflows", "List available workflows.", _handle_workflows
-    ),
+    SlashCommand("workflows", "/workflows", "List available workflows.", _handle_workflows),
     SlashCommand(
         "journal",
         "/journal [add <SYMBOL> <thesis>]",

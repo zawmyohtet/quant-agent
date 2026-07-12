@@ -1,19 +1,21 @@
 """Snapshot tests for MessageView visual states."""
+
 from __future__ import annotations
 
-from textual.app import App, ComposeResult
+from textual.app import ComposeResult
 
 from quantagent.tui.widgets.message_view import MessageView
+from tests.snapshot._base import SnapshotApp
 
 
-class _MessageViewEmptyApp(App):
+class _MessageViewEmptyApp(SnapshotApp):
     """Minimal app showing empty MessageView."""
 
     def compose(self) -> ComposeResult:
         yield MessageView(id="messages")
 
 
-class _MessageViewWithUserMessageApp(App):
+class _MessageViewWithUserMessageApp(SnapshotApp):
     """Minimal app showing MessageView with a user message."""
 
     def compose(self) -> ComposeResult:
@@ -24,7 +26,7 @@ class _MessageViewWithUserMessageApp(App):
         messages.add_user_message("analysis AAPL")
 
 
-class _MessageViewWithAgentMessageApp(App):
+class _MessageViewWithAgentMessageApp(SnapshotApp):
     """Minimal app showing MessageView with an agent response."""
 
     def compose(self) -> ComposeResult:
@@ -33,10 +35,12 @@ class _MessageViewWithAgentMessageApp(App):
     async def on_mount(self) -> None:
         messages = self.query_one("#messages", MessageView)
         mid = messages.begin_agent_message()
-        messages.append_to_agent_message(mid, "Here is the analysis of AAPL:\n\n- **RSI**: 65.2\n- **MACD**: bullish crossover")
+        messages.append_to_agent_message(
+            mid, "Here is the analysis of AAPL:\n\n- **RSI**: 65.2\n- **MACD**: bullish crossover"
+        )
 
 
-class _MessageViewWithSystemMessageApp(App):
+class _MessageViewWithSystemMessageApp(SnapshotApp):
     """Minimal app showing MessageView with a system notification."""
 
     def compose(self) -> ComposeResult:
@@ -47,7 +51,7 @@ class _MessageViewWithSystemMessageApp(App):
         messages.add_system_message("Model changed to openai:gpt-4o.")
 
 
-class _MessageViewWithErrorMessageApp(App):
+class _MessageViewWithErrorMessageApp(SnapshotApp):
     """Minimal app showing MessageView with a non-retryable error."""
 
     def compose(self) -> ComposeResult:
@@ -58,7 +62,7 @@ class _MessageViewWithErrorMessageApp(App):
         messages.add_error_message("Rate limit exceeded. Try again in 60s.", retryable=False)
 
 
-class _MessageViewWithToolCallsApp(App):
+class _MessageViewWithToolCallsApp(SnapshotApp):
     """Minimal app showing MessageView with completed tool call entries."""
 
     def compose(self) -> ComposeResult:
@@ -70,7 +74,7 @@ class _MessageViewWithToolCallsApp(App):
         messages.complete_tool_call("call-1", "Retrieved 252 rows of OHLCV data.")
 
 
-class _MessageViewMultiTurnConversationApp(App):
+class _MessageViewMultiTurnConversationApp(SnapshotApp):
     """Minimal app showing a multi-turn conversation with correct display order.
 
     Simulates: user -> tool -> agent -> user -> tool -> agent -> system

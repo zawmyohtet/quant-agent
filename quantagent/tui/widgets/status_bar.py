@@ -32,6 +32,4 @@ class StatusBar(Horizontal):
         provider = self.state.config.provider
         thread = self.state.thread_id[:8] if self.state.thread_id else "none"
         tokens = f"{self.state.token_count:,}t"
-        self._info.update(
-            f"model: {model} | provider: {provider} | thread: #{thread} | {tokens}"
-        )
+        self._info.update(f"model: {model} | provider: {provider} | thread: #{thread} | {tokens}")

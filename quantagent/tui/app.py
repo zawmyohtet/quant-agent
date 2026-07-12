@@ -76,6 +76,16 @@ class QuantAgentApp(App):
         self.state = SessionState(config=config)
         self.runner: AgentRunner | None = None
         self._event_consumer: asyncio.Task | None = None
+        if config.theme in self.available_themes:
+            self.theme = config.theme
+        else:
+            logger.warning("Unknown theme %r in config; using default.", config.theme)
+
+    def watch_theme(self, theme_name: str) -> None:
+        """Persist theme changes from any source (/theme, command palette)."""
+        if self.config.theme != theme_name:
+            self.config.theme = theme_name
+            self.config.save()
 
     def compose(self) -> ComposeResult:
         yield MessageView(id="messages")

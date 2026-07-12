@@ -21,6 +21,13 @@ _LEGACY_APPROVAL_NAMES = {
     "optimize_portfolio": "optimize_portfolio_tool",
 }
 
+# Older configs stored "dark"/"light" before themes were wired to Textual,
+# which validates against its registered theme names; migrate silently.
+_LEGACY_THEME_NAMES = {
+    "dark": "textual-dark",
+    "light": "textual-light",
+}
+
 
 class QuantAgentConfig(BaseModel):
     """Persisted user configuration for QuantAgent."""
@@ -29,7 +36,7 @@ class QuantAgentConfig(BaseModel):
 
     model: str = Field(default="anthropic:claude-sonnet-4-6")
     provider: str = Field(default="yfinance")
-    theme: str = Field(default="dark")
+    theme: str = Field(default="nord")
     approval_required: list[str] = Field(
         default_factory=lambda: [
             "run_backtest_tool",
@@ -68,9 +75,9 @@ class QuantAgentConfig(BaseModel):
                 "zai_api_key": self.zai_api_key or os.environ.get("ZAI_API_KEY"),
                 "zai_api_base": os.environ.get("ZAI_API_BASE", self.zai_api_base),
                 "approval_required": [
-                    _LEGACY_APPROVAL_NAMES.get(name, name)
-                    for name in self.approval_required
+                    _LEGACY_APPROVAL_NAMES.get(name, name) for name in self.approval_required
                 ],
+                "theme": _LEGACY_THEME_NAMES.get(self.theme, self.theme),
             }
         )
 
