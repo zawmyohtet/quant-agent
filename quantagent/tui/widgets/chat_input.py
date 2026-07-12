@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from textual.app import ComposeResult
-from textual.containers import Vertical
+from textual.containers import Horizontal, Vertical
 from textual.events import Key
 from textual.message import Message
 from textual.reactive import reactive
@@ -25,11 +25,14 @@ class Suggestion:
 
 
 class _CommandInput(Input):
-    """Input that lets the parent ChatInput consume dropdown-navigation keys."""
+    """Input that lets the owning ChatInput consume dropdown-navigation keys."""
+
+    def __init__(self, chat: ChatInput, **kwargs: Any) -> None:
+        super().__init__(**kwargs)
+        self._chat = chat
 
     def on_key(self, event: Key) -> None:
-        chat = self.parent
-        if isinstance(chat, ChatInput) and chat.handle_dropdown_key(event.key):
+        if self._chat.handle_dropdown_key(event.key):
             event.stop()
             event.prevent_default()
 
@@ -49,6 +52,7 @@ class ChatInput(Vertical):
     def __init__(self, **kwargs: Any) -> None:
         super().__init__(**kwargs)
         self._input = _CommandInput(
+            self,
             placeholder="Type a message or /help",
             id="chat-input-field",
             select_on_focus=False,
@@ -59,7 +63,9 @@ class ChatInput(Vertical):
 
     def compose(self) -> ComposeResult:
         yield self._dropdown
-        yield self._input
+        with Horizontal(id="chat-input-box"):
+            yield Static(">", id="chat-input-prompt")
+            yield self._input
 
     def on_mount(self) -> None:
         self._input.focus()
