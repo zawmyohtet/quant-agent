@@ -12,6 +12,7 @@ from quantagent.tui.commands import (
     _handle_compare,
     _handle_retry,
     _handle_screen,
+    _handle_warm,
     find_command,
 )
 from quantagent.tui.config import QuantAgentConfig
@@ -69,6 +70,22 @@ class TestSlashCommandDelegation:
         with patch.object(app, "_submit_user_message") as mock_submit:
             await _handle_compare(["AAPL", "GOOGL"], app)
             mock_submit.assert_called_once_with("Compare AAPL GOOGL")
+
+    @pytest.mark.asyncio
+    async def test_warm_defaults_to_sp500(self, app: QuantAgentApp) -> None:
+        app.runner = MagicMock()
+        with patch.object(app, "_submit_user_message") as mock_submit:
+            await _handle_warm([], app)
+            mock_submit.assert_called_once()
+            assert "'sp500'" in mock_submit.call_args.args[0]
+
+    @pytest.mark.asyncio
+    async def test_warm_delegates_to_app_submit(self, app: QuantAgentApp) -> None:
+        app.runner = MagicMock()
+        with patch.object(app, "_submit_user_message") as mock_submit:
+            await _handle_warm(["NASDAQ100"], app)
+            mock_submit.assert_called_once()
+            assert "'nasdaq100'" in mock_submit.call_args.args[0]
 
     @pytest.mark.asyncio
     async def test_retry_delegates_to_app_submit(self, app: QuantAgentApp) -> None:

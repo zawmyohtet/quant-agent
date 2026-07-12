@@ -265,6 +265,15 @@ async def _handle_heatmap(args: list[str], app: QuantAgentApp) -> None:
     )
 
 
+async def _handle_warm(args: list[str], app: QuantAgentApp) -> None:
+    universe = args[0].lower() if args else "sp500"
+    await app._submit_user_message(
+        f"Warm the breadth cache for the '{universe}' universe using the "
+        "warm_breadth_cache tool, then confirm how many symbols and rows "
+        "were ingested. Note this can take several minutes."
+    )
+
+
 async def _handle_compare(args: list[str], app: QuantAgentApp) -> None:
     if len(args) < 2:
         _system(app, "Usage: /compare <SYM1> <SYM2> ...")
@@ -342,6 +351,12 @@ REGISTRY: list[SlashCommand] = [
         "/heatmap [metric]",
         "Market heatmap (performance/volume/volatility/rsi).",
         _handle_heatmap,
+    ),
+    SlashCommand(
+        "warm",
+        "/warm [universe]",
+        "Warm breadth cache (sp500/nasdaq100/sector_etfs).",
+        _handle_warm,
     ),
     SlashCommand(
         "report",
