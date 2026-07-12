@@ -24,6 +24,16 @@ class Suggestion:
     command_name: str
 
 
+class _CommandInput(Input):
+    """Input that lets the parent ChatInput consume dropdown-navigation keys."""
+
+    def on_key(self, event: Key) -> None:
+        chat = self.parent
+        if isinstance(chat, ChatInput) and chat.handle_dropdown_key(event.key):
+            event.stop()
+            event.prevent_default()
+
+
 class ChatInput(Vertical):
     """Multi-line input bar with slash command autocomplete."""
 
@@ -38,17 +48,18 @@ class ChatInput(Vertical):
 
     def __init__(self, **kwargs: Any) -> None:
         super().__init__(**kwargs)
-        self._input = Input(
+        self._input = _CommandInput(
             placeholder="Type a message or /help",
             id="chat-input-field",
             select_on_focus=False,
         )
         self._dropdown = ListView(id="chat-input-dropdown")
         self._dropdown.display = False
+        self._dropdown.can_focus = False
 
     def compose(self) -> ComposeResult:
-        yield self._input
         yield self._dropdown
+        yield self._input
 
     def on_mount(self) -> None:
         self._input.focus()
@@ -68,20 +79,37 @@ class ChatInput(Vertical):
             self.value = ""
         self._dropdown.display = False
 
-    def on_key(self, event: Key) -> None:
-        if event.key == "tab":
-            event.stop()
-            self._autocomplete()
-        elif event.key == "escape":
-            if self._dropdown.display:
-                event.stop()
+    def handle_dropdown_key(self, key: str) -> bool:
+        """Handle a navigation key for the dropdown. Returns True if consumed."""
+        if not self._dropdown.display:
+            return False
+        if key == "down":
+            count = len(self._dropdown.children)
+            if count:
+                index = self._dropdown.index
+                self._dropdown.index = 0 if index is None else min(index + 1, count - 1)
+            return True
+        if key == "up":
+            index = self._dropdown.index
+            if index is None:
+                return False
+            self._dropdown.index = None if index == 0 else index - 1
+            return True
+        if key == "enter":
+            if self._dropdown.index is None:
+                return False
+            selected = self._dropdown.highlighted_child
+            if selected is not None and hasattr(selected, "command_name"):
+                self._apply_autocomplete(selected.command_name)
             self._dropdown.display = False
-        elif event.key == "down" and self._dropdown.display:
-            event.stop()
-            self._dropdown.focus()
-        elif event.key == "enter" and event.is_printable:
-            # Let Input handle normal Enter
-            pass
+            return True
+        if key == "tab":
+            self._autocomplete()
+            return True
+        if key == "escape":
+            self._dropdown.display = False
+            return True
+        return False
 
     def on_list_view_selected(self, event: ListView.Selected) -> None:
         item = event.item
@@ -96,25 +124,34 @@ class ChatInput(Vertical):
         self._input.cursor_position = len(self._input.value)
 
     def _update_dropdown(self, text: str) -> None:
-        parts = text[1:].split()
-        if not parts:
+        body = text[1:]
+        if " " in body:
+            # Command token complete; user is typing arguments.
             self._dropdown.display = False
             return
-        prefix = parts[0].lower()
-        matches = [
+        prefix = body.lower()
+        prefix_matches = [
             cmd
             for cmd in REGISTRY
             if cmd.name.startswith(prefix) or any(alias.startswith(prefix) for alias in cmd.aliases)
         ]
+        substr_matches = [
+            cmd
+            for cmd in REGISTRY
+            if cmd not in prefix_matches
+            and (prefix in cmd.name or any(prefix in alias for alias in cmd.aliases))
+        ]
+        matches = prefix_matches + substr_matches
         if not matches:
             self._dropdown.display = False
             return
 
         self._dropdown.clear()
-        for cmd in matches[:8]:
-            item = ListItem(Static(f"/{cmd.name} — {cmd.description}"))
+        for cmd in matches:
+            item = ListItem(Static(f"[b]/{cmd.name}[/b] — {cmd.description}", markup=True))
             item.command_name = cmd.name  # type: ignore[attr-defined]
             self._dropdown.append(item)
+        self._dropdown.index = None
         self._dropdown.display = True
 
     def _autocomplete(self) -> None:

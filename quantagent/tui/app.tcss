@@ -43,7 +43,7 @@ ChatFooter {
 
 ChatInput {
     height: auto;
-    max-height: 6;
+    max-height: 16;
     border-top: solid $border;
     padding: 0 2;
 }
@@ -51,7 +51,12 @@ ChatInput {
 #chat-input-dropdown {
     display: none;
     height: auto;
-    max-height: 8;
+    max-height: 10;
+    overflow-y: auto;
     border: solid $primary;
     background: $surface;
+}
+
+#chat-input-dropdown > ListItem.-highlight {
+    background: $primary 40%;
 }
