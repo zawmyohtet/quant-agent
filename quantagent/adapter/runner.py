@@ -235,6 +235,34 @@ class AgentRunner:
             self._approval_future.set_result(approved)
         self._approval_future = None
 
+    async def load_history(self, thread_id: str) -> list[Any]:
+        """Return the persisted messages for a thread from the checkpointer.
+
+        Returns an empty list when the agent is not ready or the thread has
+        no saved state.
+        """
+        if self._agent is None:
+            return []
+        try:
+            snapshot = await self._agent.aget_state(
+                {"configurable": {"thread_id": thread_id}}
+            )
+        except Exception:
+            logger.exception("Failed to load history for thread %s", thread_id)
+            return []
+        if snapshot is None:
+            return []
+        return list(snapshot.values.get("messages", []))
+
+    async def delete_thread(self, thread_id: str) -> None:
+        """Delete a thread's messages from the checkpointer and its metadata."""
+        if self._checkpointer is not None:
+            try:
+                await self._checkpointer.adelete_thread(thread_id)
+            except Exception:
+                logger.exception("Failed to delete checkpoints for thread %s", thread_id)
+        await self.state.delete_thread(thread_id)
+
     def cancel(self) -> None:
         """Signal the current turn to stop."""
         if self._current_task and not self._current_task.done():

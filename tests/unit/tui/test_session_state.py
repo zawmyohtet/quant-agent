@@ -14,7 +14,9 @@ class TestSessionState:
         assert state.token_count == 0
         assert cfg.thread_id == state.thread_id
 
-    def test_config_thread_id_restored(self) -> None:
+    def test_launch_starts_fresh_thread(self) -> None:
+        # Each launch starts a fresh thread rather than resuming the last one;
+        # a persisted config thread_id must not carry over.
         cfg = QuantAgentConfig(thread_id="test-thread-123")
         state = SessionState(config=cfg)
-        assert state.thread_id == "test-thread-123"
+        assert state.thread_id != "test-thread-123"

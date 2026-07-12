@@ -167,9 +167,8 @@ def _handle_memory(args: list[str], app: QuantAgentApp) -> None:
         _system(app, "No QUANTAGENT.md found. Create one at ~/.quantagent/QUANTAGENT.md")
 
 
-def _handle_approve(args: list[str], app: QuantAgentApp) -> None:
-    app.state.pre_approve_next = True
-    _system(app, "Next tool call will be auto-approved.")
+def _handle_exit(args: list[str], app: QuantAgentApp) -> None:
+    app.exit()
 
 
 async def _handle_analyze(args: list[str], app: QuantAgentApp) -> None:
@@ -250,8 +249,23 @@ async def _handle_workflow(args: list[str], app: QuantAgentApp) -> None:
     )
 
 
-async def _handle_workflows(args: list[str], app: QuantAgentApp) -> None:
-    await app._submit_user_message("List the available analysis workflows and what each one does.")
+def _handle_workflows(args: list[str], app: QuantAgentApp) -> None:
+    from quantagent.tools.workflows import list_workflows
+
+    workflows = list_workflows()
+    builtins = [w for w in workflows if w["type"] == "builtin"]
+    customs = [w for w in workflows if w["type"] == "custom"]
+
+    lines = ["**Available workflows**\n", "Run one with `/workflow <name> [target]`.\n"]
+    lines.append("_Built-in_")
+    for w in builtins:
+        desc = (w["description"] or "").strip().splitlines()[0] if w["description"] else ""
+        lines.append(f"  `{w['name']}` — {desc}")
+    if customs:
+        lines.append("\n_Custom_")
+        for w in customs:
+            lines.append(f"  `{w['name']}`")
+    _system(app, "\n".join(lines))
 
 
 async def _handle_report(args: list[str], app: QuantAgentApp) -> None:
@@ -278,10 +292,27 @@ async def _handle_universe(args: list[str], app: QuantAgentApp) -> None:
     )
 
 
-async def _handle_universes(args: list[str], app: QuantAgentApp) -> None:
-    await app._submit_user_message(
-        "List all available screening universes with their symbol counts."
-    )
+def _handle_universes(args: list[str], app: QuantAgentApp) -> None:
+    import json
+
+    from quantagent.tools._paths import universes_dir
+    from quantagent.tools.universe import BUILTIN_UNIVERSES
+
+    lines = ["**Screening universes**\n", "Switch the active one with `/universe <name>`.\n"]
+    lines.append("_Built-in_")
+    for name in BUILTIN_UNIVERSES:
+        lines.append(f"  `{name}` — constituents fetched on demand")
+
+    custom_paths = sorted(universes_dir().glob("*.json"))
+    if custom_paths:
+        lines.append("\n_Custom_")
+        for path in custom_paths:
+            try:
+                count = len(json.loads(path.read_text()).get("symbols", []))
+                lines.append(f"  `{path.stem}` — {count} symbols")
+            except (OSError, ValueError):
+                lines.append(f"  `{path.stem}`")
+    _system(app, "\n".join(lines))
 
 
 async def _handle_heatmap(args: list[str], app: QuantAgentApp) -> None:
@@ -363,6 +394,14 @@ REGISTRY: list[SlashCommand] = [
     SlashCommand(
         "help", "/help [command]", "Show available commands.", _handle_help, category="Session"
     ),
+    SlashCommand(
+        "exit",
+        "/exit",
+        "Quit QuantAgent.",
+        _handle_exit,
+        aliases=["quit"],
+        category="Session",
+    ),
     # Config
     SlashCommand(
         "model", "/model <provider:model>", "Set LLM model.", _handle_model, category="Config"
@@ -391,9 +430,6 @@ REGISTRY: list[SlashCommand] = [
     ),
     SlashCommand(
         "memory", "/memory", "Print QUANTAGENT.md content.", _handle_memory, category="Config"
-    ),
-    SlashCommand(
-        "approve", "/approve", "Pre-approve next tool call.", _handle_approve, category="Config"
     ),
     # Analysis
     SlashCommand(

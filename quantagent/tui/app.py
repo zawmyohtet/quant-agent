@@ -3,7 +3,6 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
-from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -24,6 +23,7 @@ from quantagent.adapter.events import (
     ToolProgress,
 )
 from quantagent.adapter.runner import AgentRunner
+from quantagent.tui._history import replay_messages
 from quantagent.tui.config import QuantAgentConfig
 from quantagent.tui.session_state import SessionState
 from quantagent.tui.widgets.approval_dialog import ApprovalDialog
@@ -134,13 +134,9 @@ class QuantAgentApp(App):
         messages = self.query_one(_ID_MESSAGES, MessageView)
         messages.add_system_message(banner)
 
-        await self.state.upsert_thread(
-            thread_id=self.state.thread_id,
-            created_at=datetime.now(UTC).isoformat(),
-            model=self.state.config.model,
-            provider=self.state.config.provider,
-            first_message_preview="Welcome",
-        )
+        # Each launch starts a fresh thread; drop metadata rows left behind by
+        # threads that never accumulated any messages.
+        await self.state.prune_empty_threads()
 
     async def on_unmount(self) -> None:
         # Cancel any active agent workers first so network I/O tasks
@@ -257,12 +253,28 @@ class QuantAgentApp(App):
 
         await dispatch(raw, app=self)
 
+    async def switch_thread(self, thread_id: str) -> None:
+        """Switch to an existing thread and restore its transcript."""
+        self.state.thread_id = thread_id
+        self.state.config.thread_id = thread_id
+        self.state.config.save()
+
+        messages = self.query_one(_ID_MESSAGES, MessageView)
+        messages.clear()
+
+        history = await self.runner.load_history(thread_id) if self.runner else []
+        replay_messages(history, messages)
+
+        self.query_one(_ID_STATUS_BAR, StatusBar).refresh_state()
+        messages.add_system_message(f"Switched to thread #{thread_id[:8]}.")
+
     async def _submit_user_message(self, text: str) -> None:
         if self.state.is_running:
             return
         messages = self.query_one(_ID_MESSAGES, MessageView)
         messages._agent_buffer_id = None
         messages.add_user_message(text)
+        await self.state.note_user_message(text)
         self.state.start_turn()
         self.query_one(_ID_STATUS_BAR, StatusBar).refresh_state()
         if self.runner:

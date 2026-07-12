@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import logging
+import sqlite3
 import time
 import uuid
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from pathlib import Path
 
 import aiosqlite
@@ -41,7 +43,6 @@ class SessionState:
     thread_id: str = field(default_factory=lambda: str(uuid.uuid4()))
     token_count: int = 0
     is_running: bool = False
-    pre_approve_next: bool = False
     # What the agent is doing right now ("thinking" or a tool name); None when idle.
     current_activity: str | None = None
     # time.monotonic() when the current turn started; None when idle.
@@ -57,10 +58,6 @@ class SessionState:
         self.current_activity = None
         self.turn_started_at = None
 
-    def __post_init__(self) -> None:
-        if self.config.thread_id:
-            self.thread_id = self.config.thread_id
-
     def new_thread(self) -> None:
         """Generate a new thread ID and persist it."""
         self.thread_id = str(uuid.uuid4())
@@ -69,13 +66,46 @@ class SessionState:
         self.config.save()
 
     async def list_threads(self) -> list[dict]:
-        """Return all stored threads ordered by creation time (newest first)."""
+        """Return threads that actually have persisted messages, newest first.
+
+        The checkpointer is the source of truth for which threads exist;
+        metadata (preview/model/provider) is joined in for display so the
+        list can never drift from where messages are stored.
+        """
         await _init_db()
         async with aiosqlite.connect(_DB_PATH) as db:
             db.row_factory = aiosqlite.Row
-            async with db.execute("SELECT * FROM threads ORDER BY created_at DESC") as cursor:
-                rows = await cursor.fetchall()
-                return [dict(row) for row in rows]
+            try:
+                async with db.execute(
+                    """
+                    SELECT c.thread_id AS id,
+                           t.first_message_preview AS first_message_preview,
+                           t.created_at AS created_at,
+                           t.model AS model,
+                           t.provider AS provider
+                    FROM (SELECT DISTINCT thread_id FROM checkpoints) c
+                    LEFT JOIN threads t ON t.id = c.thread_id
+                    ORDER BY t.created_at DESC
+                    """
+                ) as cursor:
+                    rows = await cursor.fetchall()
+                    return [dict(row) for row in rows]
+            except sqlite3.OperationalError:
+                # No checkpoints table yet (fresh install).
+                return []
+
+    async def prune_empty_threads(self) -> None:
+        """Drop metadata rows for threads that have no persisted messages."""
+        await _init_db()
+        async with aiosqlite.connect(_DB_PATH) as db:
+            try:
+                await db.execute(
+                    "DELETE FROM threads WHERE id NOT IN "
+                    "(SELECT DISTINCT thread_id FROM checkpoints)"
+                )
+                await db.commit()
+            except sqlite3.OperationalError:
+                pass
 
     async def get_thread(self, thread_id: str) -> dict | None:
         """Fetch a single thread by ID."""
@@ -92,6 +122,25 @@ class SessionState:
         async with aiosqlite.connect(_DB_PATH) as db:
             await db.execute("DELETE FROM threads WHERE id = ?", (thread_id,))
             await db.commit()
+
+    async def note_user_message(self, text: str) -> None:
+        """Record the first real user message as the thread's list preview.
+
+        Only overwrites the placeholder preview so an existing thread's title
+        is preserved on subsequent messages.
+        """
+        existing = await self.get_thread(self.thread_id)
+        preview = existing.get("first_message_preview") if existing else None
+        if preview not in (None, "", "Welcome"):
+            return
+        created_at = (existing or {}).get("created_at") or datetime.now(UTC).isoformat()
+        await self.upsert_thread(
+            thread_id=self.thread_id,
+            created_at=created_at,
+            model=self.config.model,
+            provider=self.config.provider,
+            first_message_preview=text[:80],
+        )
 
     async def upsert_thread(
         self,

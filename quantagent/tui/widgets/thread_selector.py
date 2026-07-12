@@ -13,8 +13,6 @@ from textual.screen import ModalScreen
 from textual.widgets import ListItem, ListView, Static
 
 from quantagent.tui.session_state import SessionState
-from quantagent.tui.widgets.message_view import MessageView
-from quantagent.tui.widgets.status_bar import StatusBar
 
 if TYPE_CHECKING:
     from quantagent.tui.app import QuantAgentApp
@@ -29,14 +27,15 @@ class ThreadSelectorScreen(ModalScreen):
         super().__init__(**kwargs)
         self._threads: list[dict] = []
         self._delete_task: asyncio.Task[None] | None = None
+        self._switch_task: asyncio.Task[None] | None = None
 
     async def on_mount(self) -> None:
         state: SessionState = cast("QuantAgentApp", self.app).state
         self._threads = await state.list_threads()
         list_view = self.query_one("#thread-list", ListView)
         for t in self._threads:
-            preview = t.get("first_message_preview", "")
-            created = t.get("created_at", "")
+            preview = t.get("first_message_preview") or "(untitled)"
+            created = t.get("created_at") or ""
             try:
                 dt = datetime.fromisoformat(created)
                 age = self._humanize(dt)
@@ -70,15 +69,8 @@ class ThreadSelectorScreen(ModalScreen):
 
     def _switch_to(self, thread_id: str) -> None:
         app = cast("QuantAgentApp", self.app)
-        app.state.config.thread_id = thread_id
-        app.state.thread_id = thread_id
-        app.state.config.save()
-        app.query_one("#messages", MessageView).clear()
-        app.query_one("#status-bar", StatusBar).refresh_state()
+        self._switch_task = asyncio.create_task(app.switch_thread(thread_id))
         self.dismiss()
-        app.query_one("#messages", MessageView).add_system_message(
-            f"Switched to thread #{thread_id[:8]}."
-        )
 
     async def _delete_current(self) -> None:
         list_view = self.query_one("#thread-list", ListView)
@@ -88,7 +80,11 @@ class ThreadSelectorScreen(ModalScreen):
         tid = getattr(item, "thread_id", None)
         if not tid:
             return
-        await cast("QuantAgentApp", self.app).state.delete_thread(tid)
+        app = cast("QuantAgentApp", self.app)
+        if app.runner:
+            await app.runner.delete_thread(tid)
+        else:
+            await app.state.delete_thread(tid)
         list_view.remove_children([item])
         if not list_view.children:
             self.dismiss()
