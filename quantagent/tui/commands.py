@@ -9,7 +9,6 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from quantagent.tui.config import _DEFAULT_CONFIG_DIR
-from quantagent.tui.widgets.chat_footer import ChatFooter
 from quantagent.tui.widgets.message_view import MessageView
 from quantagent.tui.widgets.status_bar import StatusBar
 
@@ -329,9 +328,6 @@ def _system(app: QuantAgentApp, text: str) -> None:
 def _refresh_status(app: QuantAgentApp) -> None:
     status = app.query_one("#status-bar", StatusBar)
     status.refresh_state()
-    footer = app.query_one("#chat-footer", ChatFooter)
-    if hasattr(footer, "refresh_state"):
-        footer.refresh_state()
 
 
 REGISTRY: list[SlashCommand] = [

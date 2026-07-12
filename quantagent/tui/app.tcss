@@ -10,35 +10,32 @@ MessageView {
 
 StatusBar {
     height: 1;
-    background: $surface;
+    background: $panel;
     padding: 0 2;
-    margin-top: 1;
 }
 
-#status-info {
-    width: 100%;
-    color: $text-muted;
-}
-
-ChatFooter {
-    height: 1;
-    background: $surface;
-    padding: 0 2;
-    margin-top: 1;
-}
-
-#footer-loading {
+#status-activity {
     width: auto;
     color: $text-muted;
 }
 
-#footer-spacer {
+#status-activity.-running {
+    color: $warning;
+    text-style: bold;
+}
+
+#status-spacer {
     width: 1fr;
 }
 
-#footer-hint {
+.status-segment {
     width: auto;
     color: $text-muted;
+    margin-left: 2;
+}
+
+#status-model {
+    color: $accent;
 }
 
 ChatInput {

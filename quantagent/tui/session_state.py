@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import time
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -41,6 +42,20 @@ class SessionState:
     token_count: int = 0
     is_running: bool = False
     pre_approve_next: bool = False
+    # What the agent is doing right now ("thinking" or a tool name); None when idle.
+    current_activity: str | None = None
+    # time.monotonic() when the current turn started; None when idle.
+    turn_started_at: float | None = None
+
+    def start_turn(self) -> None:
+        self.is_running = True
+        self.current_activity = "thinking"
+        self.turn_started_at = time.monotonic()
+
+    def end_turn(self) -> None:
+        self.is_running = False
+        self.current_activity = None
+        self.turn_started_at = None
 
     def __post_init__(self) -> None:
         if self.config.thread_id:

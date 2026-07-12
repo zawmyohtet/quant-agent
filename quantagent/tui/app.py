@@ -8,6 +8,8 @@ from pathlib import Path
 from typing import Any
 
 from textual.app import App, ComposeResult
+from textual.binding import Binding
+from textual.widgets import Footer
 from textual.worker import WorkerCancelled
 
 from quantagent.adapter.events import (
@@ -25,7 +27,6 @@ from quantagent.adapter.runner import AgentRunner
 from quantagent.tui.config import QuantAgentConfig
 from quantagent.tui.session_state import SessionState
 from quantagent.tui.widgets.approval_dialog import ApprovalDialog
-from quantagent.tui.widgets.chat_footer import ChatFooter
 from quantagent.tui.widgets.chat_input import ChatInput
 from quantagent.tui.widgets.message_view import MessageView
 from quantagent.tui.widgets.status_bar import StatusBar
@@ -38,7 +39,6 @@ _WORKERS_SHUTDOWN_TIMEOUT_SEC = 25.0
 _ID_MESSAGES = "#messages"
 _ID_STATUS_BAR = "#status-bar"
 _ID_CHAT_INPUT = "#chat-input"
-_ID_CHAT_FOOTER = "#chat-footer"
 
 _WELCOME_BANNER = """
   ██████╗ ██╗   ██╗ █████╗ ███╗   ██╗████████╗ █████╗  ██████╗ ███████╗███╗   ██╗████████╗
@@ -63,11 +63,11 @@ class QuantAgentApp(App):
 
     CSS_PATH = Path(__file__).with_suffix(".tcss")
     BINDINGS = [
-        ("ctrl+c", "quit", "Quit"),
-        ("ctrl+t", "open_threads", "Threads"),
-        ("ctrl+n", "new_thread", "New thread"),
-        ("ctrl+l", "clear_messages", "Clear"),
-        ("escape", "cancel_agent", "Interrupt"),
+        Binding("ctrl+c", "quit", "Quit"),
+        Binding("ctrl+t", "open_threads", "Threads"),
+        Binding("ctrl+n", "new_thread", "New thread"),
+        Binding("ctrl+l", "clear_messages", "Clear"),
+        Binding("escape", "cancel_agent", "Interrupt"),
     ]
 
     def __init__(self, config: QuantAgentConfig, **kwargs: Any) -> None:
@@ -91,7 +91,7 @@ class QuantAgentApp(App):
         yield MessageView(id="messages")
         yield StatusBar(self.state, id="status-bar")
         yield ChatInput(id="chat-input")
-        yield ChatFooter(self.state, id="chat-footer")
+        yield Footer(id="app-footer")
 
     async def on_mount(self) -> None:
         self.runner = AgentRunner(self.state)
@@ -165,13 +165,16 @@ class QuantAgentApp(App):
             else:
                 mid = messages.begin_agent_message()
                 messages.append_to_agent_message(mid, event.chunk)
+            self._set_activity("thinking")
 
         elif isinstance(event, ToolCallStarted):
             messages.add_tool_call(event.call_id, event.tool_name, event.args)
             messages._agent_buffer_id = None
+            self._set_activity(event.tool_name)
 
         elif isinstance(event, ToolCallCompleted):
             messages.complete_tool_call(event.call_id, event.result, is_error=event.is_error)
+            self._set_activity("thinking")
 
         elif isinstance(event, ToolProgress):
             messages.update_tool_progress(event.call_id, event.text)
@@ -183,17 +186,19 @@ class QuantAgentApp(App):
             messages.add_system_message(event.text)
 
         elif isinstance(event, AgentTurnComplete):
-            self.state.is_running = False
+            self.state.end_turn()
             messages._agent_buffer_id = None
-            status = self.query_one(_ID_STATUS_BAR, StatusBar)
-            if hasattr(status, "refresh_state"):
-                status.refresh_state()
-            footer = self.query_one(_ID_CHAT_FOOTER, ChatFooter)
-            if hasattr(footer, "refresh_state"):
-                footer.refresh_state()
+            self.query_one(_ID_STATUS_BAR, StatusBar).refresh_state()
 
         elif isinstance(event, ApprovalRequest):
             await self._handle_approval_request(event)
+
+    def _set_activity(self, activity: str | None) -> None:
+        """Update the agent activity shown in the status bar, if it changed."""
+        if self.state.current_activity == activity:
+            return
+        self.state.current_activity = activity
+        self.query_one(_ID_STATUS_BAR, StatusBar).refresh_state()
 
     async def _handle_approval_request(self, event: ApprovalRequest) -> None:
         """Show approval dialog and relay the decision back to the runner."""
@@ -231,13 +236,8 @@ class QuantAgentApp(App):
         messages = self.query_one(_ID_MESSAGES, MessageView)
         messages._agent_buffer_id = None
         messages.add_user_message(text)
-        self.state.is_running = True
-        status = self.query_one(_ID_STATUS_BAR, StatusBar)
-        if hasattr(status, "refresh_state"):
-            status.refresh_state()
-        footer = self.query_one(_ID_CHAT_FOOTER, ChatFooter)
-        if hasattr(footer, "refresh_state"):
-            footer.refresh_state()
+        self.state.start_turn()
+        self.query_one(_ID_STATUS_BAR, StatusBar).refresh_state()
         if self.runner:
             self.run_worker(self.runner.run_turn(text), exclusive=True)
 
@@ -248,7 +248,6 @@ class QuantAgentApp(App):
         self.state.new_thread()
         self.query_one(_ID_MESSAGES, MessageView).clear()
         self.query_one(_ID_STATUS_BAR, StatusBar).refresh_state()
-        self.query_one(_ID_CHAT_FOOTER, ChatFooter).refresh_state()
         self.query_one(_ID_MESSAGES, MessageView).add_system_message("Started new thread.")
 
     def action_clear_messages(self) -> None:
@@ -258,4 +257,6 @@ class QuantAgentApp(App):
         messages = self.query_one(_ID_MESSAGES, MessageView)
         if self.runner:
             self.runner.cancel()
+        self.state.end_turn()
+        self.query_one(_ID_STATUS_BAR, StatusBar).refresh_state()
         messages.add_system_message("Agent turn cancelled.")

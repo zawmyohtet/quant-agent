@@ -5,10 +5,11 @@ from __future__ import annotations
 from pathlib import Path
 
 from textual.app import ComposeResult
+from textual.widgets import Footer
 
+from quantagent.tui.app import QuantAgentApp
 from quantagent.tui.config import QuantAgentConfig
 from quantagent.tui.session_state import SessionState
-from quantagent.tui.widgets.chat_footer import ChatFooter
 from quantagent.tui.widgets.chat_input import ChatInput
 from quantagent.tui.widgets.message_view import MessageView
 from quantagent.tui.widgets.status_bar import StatusBar
@@ -21,6 +22,7 @@ class _AppIdleLayout(SnapshotApp):
     """Full app layout in idle state for snapshot."""
 
     CSS_PATH = _PROJECT_ROOT / "quantagent" / "tui" / "app.tcss"
+    BINDINGS = QuantAgentApp.BINDINGS
 
     def compose(self) -> ComposeResult:
         state = SessionState(
@@ -32,7 +34,7 @@ class _AppIdleLayout(SnapshotApp):
         yield MessageView(id="messages")
         yield StatusBar(state, id="status-bar")
         yield ChatInput(id="chat-input")
-        yield ChatFooter(state, id="chat-footer")
+        yield Footer()
 
 
 class TestAppLayoutSnapshots:
