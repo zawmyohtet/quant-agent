@@ -4,6 +4,7 @@ import asyncio
 import logging
 from typing import Any
 
+from rich.text import Text
 from textual.app import ComposeResult
 from textual.containers import Horizontal, Vertical
 from textual.events import Key
@@ -16,25 +17,6 @@ logger = logging.getLogger(__name__)
 class ApprovalDialog(ModalScreen):
     """Modal for HITL approval of a tool call."""
 
-    CSS = """
-    ApprovalDialog {
-        align: center middle;
-    }
-    #approval-dialog {
-        width: 60;
-        height: auto;
-        border: thick $background 80%;
-        padding: 1 2;
-    }
-    .title {
-        text-align: center;
-        text-style: bold;
-    }
-    .args {
-        color: $text-muted;
-    }
-    """
-
     def __init__(
         self, tool_name: str, args: dict[str, Any], future: asyncio.Future[bool], **kwargs: Any
     ) -> None:
@@ -44,12 +26,12 @@ class ApprovalDialog(ModalScreen):
         self.future = future
 
     def compose(self) -> ComposeResult:
-        with Vertical(id="approval-dialog"):
-            yield Static("Tool Approval Required", classes="title")
-            yield Static(f"Tool:   {self.tool_name}")
+        with Vertical(id="approval-dialog") as dialog:
+            dialog.border_title = "Tool Approval"
+            yield Static(Text(f"Tool:   {self.tool_name}"))
             args_text = "  ".join(f'{k}="{v}"' for k, v in self.args.items())
-            yield Static(f"Args:   {args_text}", classes="args")
-            with Horizontal(classes="buttons"):
+            yield Static(Text(f"Args:   {args_text}"), classes="modal-muted")
+            with Horizontal(classes="modal-buttons"):
                 yield Button("Approve (A)", variant="success", id="approve")
                 yield Button("Reject (R)", variant="error", id="reject")
 

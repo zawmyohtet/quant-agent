@@ -40,6 +40,9 @@ _ID_MESSAGES = "#messages"
 _ID_STATUS_BAR = "#status-bar"
 _ID_CHAT_INPUT = "#chat-input"
 
+# The ASCII art is ~90 columns wide; fall back to the compact banner below this.
+_BANNER_MIN_WIDTH = 94
+
 _WELCOME_BANNER = """
   ██████╗ ██╗   ██╗ █████╗ ███╗   ██╗████████╗ █████╗  ██████╗ ███████╗███╗   ██╗████████╗
  ██╔═══██╗██║   ██║██╔══██╗████╗  ██║╚══██╔══╝██╔══██╗██╔════╝ ██╔════╝████╗  ██║╚══██╔══╝
@@ -48,14 +51,33 @@ _WELCOME_BANNER = """
  ╚██████╔╝╚██████╔╝██║  ██║██║ ╚████║   ██║   ██║  ██║╚██████╔╝███████╗██║ ╚████║   ██║
   ╚══▀▀═╝  ╚═════╝ ╚═╝  ╚═╝╚═╝  ╚═══╝   ╚═╝   ╚═╝  ╚═╝ ╚═════╝ ╚══════╝╚═╝  ╚═══╝   ╚═╝
 
- Quant Analysis Deep Agent  |  v0.1.0
+ Quant Analysis Deep Agent  |  v{version}
 
  Model:    {model}
  Provider: {provider}
  Thread:   #{thread}
 
- Ask anything about stocks, or type /help for commands.
+ Ask anything about stocks, type /help or press F1 for commands.
 """
+
+_WELCOME_BANNER_COMPACT = """
+ ▐█ QUANTAGENT ▌ Quant Analysis Deep Agent v{version}
+
+ Model:    {model}
+ Provider: {provider}
+ Thread:   #{thread}
+
+ Ask anything about stocks, type /help or press F1 for commands.
+"""
+
+
+def _app_version() -> str:
+    from importlib.metadata import PackageNotFoundError, version
+
+    try:
+        return version("quantagent")
+    except PackageNotFoundError:
+        return "dev"
 
 
 class QuantAgentApp(App):
@@ -100,7 +122,11 @@ class QuantAgentApp(App):
 
         self._event_consumer = asyncio.create_task(self._consume_events())
 
-        banner = _WELCOME_BANNER.format(
+        template = (
+            _WELCOME_BANNER if self.size.width >= _BANNER_MIN_WIDTH else _WELCOME_BANNER_COMPACT
+        )
+        banner = template.format(
+            version=_app_version(),
             model=self.state.config.model,
             provider=self.state.config.provider,
             thread=self.state.thread_id[:8],

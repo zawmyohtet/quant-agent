@@ -38,7 +38,7 @@ class TestToolProgress:
         view.update_tool_progress("c1", "step 2/4: sectors…")
         entry = view._find_entry("c1")
         assert entry is not None
-        assert entry.content == "● run_workflow_tool — step 2/4: sectors…"
+        assert entry.content == "run_workflow_tool — step 2/4: sectors…"
         assert entry.kind == "tool_start"
 
     def test_ignores_completed_tool(self) -> None:
@@ -48,7 +48,7 @@ class TestToolProgress:
         view.update_tool_progress("c1", "late progress")
         entry = view._find_entry("c1")
         assert entry is not None
-        assert entry.content == "✓ run_workflow_tool — done"
+        assert entry.content == "run_workflow_tool — done"
 
     def test_empty_call_id_falls_back_to_latest_running(self) -> None:
         view = _make_view()
@@ -58,7 +58,7 @@ class TestToolProgress:
         view.update_tool_progress("", "halfway")
         entry = view._find_entry("c2")
         assert entry is not None
-        assert entry.content == "● second_tool — halfway"
+        assert entry.content == "second_tool — halfway"
 
     def test_no_running_tool_is_noop(self) -> None:
         view = _make_view()

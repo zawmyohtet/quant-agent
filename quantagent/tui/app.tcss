@@ -8,6 +8,13 @@ MessageView {
     padding: 0 2;
 }
 
+#empty-state {
+    width: 100%;
+    height: 100%;
+    content-align: center middle;
+    color: $text-muted;
+}
+
 StatusBar {
     height: 1;
     background: $panel;
@@ -58,11 +65,54 @@ ChatInput {
     background: $primary 40%;
 }
 
-/* Help modal */
+/* Modals */
 
-HelpScreen {
+ApprovalDialog, ThreadSelectorScreen, HelpScreen {
     align: center middle;
 }
+
+#approval-dialog {
+    width: 60;
+    height: auto;
+    border: round $primary;
+    background: $surface;
+    padding: 1 2;
+    border-title-color: $accent;
+    border-title-style: bold;
+}
+
+#thread-dialog {
+    width: 70;
+    height: auto;
+    max-height: 20;
+    border: round $primary;
+    background: $surface;
+    padding: 1 2;
+    border-title-color: $accent;
+    border-title-style: bold;
+}
+
+#thread-list {
+    height: auto;
+    max-height: 14;
+    margin-bottom: 1;
+}
+
+.modal-muted {
+    color: $text-muted;
+}
+
+.modal-buttons {
+    height: auto;
+    margin-top: 1;
+    align-horizontal: center;
+}
+
+.modal-buttons Button {
+    margin: 0 2;
+}
+
+/* Help modal */
 
 #help-dialog {
     width: 84;

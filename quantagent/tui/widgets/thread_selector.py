@@ -5,6 +5,7 @@ import logging
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, cast
 
+from rich.text import Text
 from textual.app import ComposeResult
 from textual.containers import Vertical
 from textual.events import Key
@@ -24,24 +25,6 @@ logger = logging.getLogger(__name__)
 class ThreadSelectorScreen(ModalScreen):
     """Modal for browsing and switching conversation threads."""
 
-    CSS = """
-    ThreadSelectorScreen {
-        align: center middle;
-    }
-    #thread-dialog {
-        width: 70;
-        height: auto;
-        max-height: 20;
-        border: thick $background 80%;
-        padding: 1 2;
-    }
-    #thread-list {
-        height: auto;
-        max-height: 14;
-        border: solid $primary;
-    }
-    """
-
     def __init__(self, **kwargs: Any) -> None:
         super().__init__(**kwargs)
         self._threads: list[dict] = []
@@ -60,17 +43,17 @@ class ThreadSelectorScreen(ModalScreen):
             except Exception:
                 age = created
             label = f'#{t["id"][:8]}  "{preview[:30]}"  {age}'
-            item = ListItem(Static(label))
+            item = ListItem(Static(Text(label)))
             item.thread_id = t["id"]  # type: ignore[attr-defined]
             list_view.append(item)
         if list_view.children:
             list_view.index = 0
 
     def compose(self) -> ComposeResult:
-        with Vertical(id="thread-dialog"):
-            yield Static("Conversation Threads", classes="title")
+        with Vertical(id="thread-dialog") as dialog:
+            dialog.border_title = "Conversation Threads"
             yield ListView(id="thread-list")
-            yield Static("[Enter] switch  [Del] delete  [Esc] cancel", classes="help")
+            yield Static(Text("enter switch  ·  del delete  ·  esc cancel"), classes="modal-muted")
 
     def on_key(self, event: Key) -> None:
         if event.key == "delete":

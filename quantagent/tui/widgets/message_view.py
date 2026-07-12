@@ -8,12 +8,16 @@ from typing import Any
 from rich.console import RenderableType
 from rich.markdown import Markdown
 from rich.text import Text
+from textual.app import ComposeResult
 from textual.containers import ScrollableContainer
 from textual.widgets import Static
 
 logger = logging.getLogger(__name__)
 
 _MAX_DOM_MESSAGES = 50
+
+_EMPTY_STATE_ID = "empty-state"
+_EMPTY_STATE_TEXT = "No messages yet — ask about a stock, or press F1 for help"
 
 
 @dataclass
@@ -33,6 +37,10 @@ class MessageView(ScrollableContainer):
         self._all_entries: list[_MessageEntry] = []
         self._dom_map: dict[str, Static] = {}
         self._agent_buffer_id: str | None = None
+        self._empty_state = Static(_EMPTY_STATE_TEXT, id=_EMPTY_STATE_ID)
+
+    def compose(self) -> ComposeResult:
+        yield self._empty_state
 
     # -- Public API ----------------------------------------------------------
 
@@ -57,7 +65,7 @@ class MessageView(ScrollableContainer):
         entry = _MessageEntry(
             message_id=call_id,
             kind="tool_start",
-            content=f"● {tool_name} — running…",
+            content=f"{tool_name} — running…",
             metadata={"tool_name": tool_name, "args": args, "result": None},
         )
         self._append_entry(entry)
@@ -76,18 +84,17 @@ class MessageView(ScrollableContainer):
             )
         if entry is None:
             return
-        entry.content = f"● {entry.metadata['tool_name']} — {text}"
+        entry.content = f"{entry.metadata['tool_name']} — {text}"
         self._update_dom(entry)
 
     def complete_tool_call(self, call_id: str, result: str, *, is_error: bool = False) -> None:
         entry = self._find_entry(call_id)
         if entry:
             entry.metadata["result"] = result
+            entry.metadata["is_error"] = is_error
             entry.kind = "tool_done"
-            if is_error:
-                entry.content = f"[bold red]✗[/] {entry.metadata['tool_name']} — failed"
-            else:
-                entry.content = f"✓ {entry.metadata['tool_name']} — done"
+            status = "failed" if is_error else "done"
+            entry.content = f"{entry.metadata['tool_name']} — {status}"
             self._update_dom(entry)
 
     def add_system_message(self, text: str) -> None:
@@ -95,23 +102,21 @@ class MessageView(ScrollableContainer):
         self._append_entry(entry)
 
     def add_error_message(self, text: str, retryable: bool = False) -> None:
-        content = f"[bold red]Error:[/] {text}"
-        if retryable:
-            content += "\n[dim]Press r to retry[/]"
         entry = _MessageEntry(
             message_id=self._new_id(),
             kind="error",
-            content=content,
+            content=text,
             metadata={"retryable": retryable},
         )
         self._append_entry(entry)
 
     def clear(self) -> None:
         self._all_entries.clear()
-        self._dom_map.clear()
         self._agent_buffer_id = None
-        for child in self.children:
-            child.remove()
+        for widget in self._dom_map.values():
+            widget.remove()
+        self._dom_map.clear()
+        self._empty_state.display = True
 
     def last_user_message(self) -> str | None:
         for entry in reversed(self._all_entries):
@@ -149,6 +154,7 @@ class MessageView(ScrollableContainer):
         return None
 
     def _append_entry(self, entry: _MessageEntry) -> None:
+        self._empty_state.display = False
         self._all_entries.append(entry)
         widget = self._render_entry(entry)
         self._dom_map[entry.message_id] = widget
@@ -165,8 +171,9 @@ class MessageView(ScrollableContainer):
             widget.remove()
 
     def _enforce_limit(self) -> None:
-        while len(self.children) > _MAX_DOM_MESSAGES:
-            oldest = self.children[0]
+        message_widgets = [c for c in self.children if c.id != _EMPTY_STATE_ID]
+        while len(message_widgets) > _MAX_DOM_MESSAGES:
+            oldest = message_widgets.pop(0)
             for mid, w in self._dom_map.items():
                 if w is oldest:
                     del self._dom_map[mid]
@@ -183,14 +190,23 @@ class MessageView(ScrollableContainer):
         return Static(self._to_renderable(entry), classes=f"msg-{entry.kind}")
 
     def _to_renderable(self, entry: _MessageEntry) -> RenderableType:
+        # Dynamic content (user input, tool output, exception text) is assembled
+        # as plain Text so stray "[...]" sequences never parse as Rich markup.
         if entry.kind == "user":
-            return Text.from_markup(f"[bold cyan]You[/]\n{entry.content}")
+            return Text.assemble(("You", "bold cyan"), "\n", entry.content)
         if entry.kind == "agent":
             return Markdown(entry.content)
         if entry.kind == "system":
-            return Text.from_markup(f"[dim italic]{entry.content}[/]")
+            return Text(entry.content, style="dim italic")
         if entry.kind == "error":
-            return Text.from_markup(entry.content)
-        if entry.kind in ("tool_start", "tool_done"):
-            return Text.from_markup(f"[dim]{entry.content}[/]")
+            text = Text.assemble(("Error: ", "bold red"), entry.content)
+            if entry.metadata.get("retryable"):
+                text.append("\nType /retry to retry", style="dim")
+            return text
+        if entry.kind == "tool_start":
+            return Text.assemble(("● ", "dim"), (entry.content, "dim"))
+        if entry.kind == "tool_done":
+            if entry.metadata.get("is_error"):
+                return Text.assemble(("✗ ", "bold red"), (entry.content, "dim"))
+            return Text.assemble(("✓ ", "green"), (entry.content, "dim"))
         return Text(entry.content)
