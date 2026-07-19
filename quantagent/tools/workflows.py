@@ -309,6 +309,11 @@ BUILTIN_WORKFLOWS: dict[str, Callable[..., Workflow]] = {
 _TARGET_REQUIRED = {"stock_research", "portfolio_rebalance_review"}
 
 
+def workflow_requires_target(name: str) -> bool:
+    """Whether a built-in workflow needs a target argument (e.g. a symbol)."""
+    return name in _TARGET_REQUIRED
+
+
 def load_custom_workflow(name: str) -> Workflow:
     """Load and validate a custom workflow YAML by name.
 
@@ -343,10 +348,13 @@ def list_workflows() -> list[dict]:
         {"name": name, "type": "builtin", "description": factory.__doc__ or ""}
         for name, factory in BUILTIN_WORKFLOWS.items()
     ]
-    custom = [
-        {"name": p.stem, "type": "custom", "description": str(p)}
-        for p in sorted(workflows_dir().glob("*.yaml"))
-    ]
+    custom = []
+    for p in sorted(workflows_dir().glob("*.yaml")):
+        try:
+            description = (yaml.safe_load(p.read_text()) or {}).get("description", "")
+        except (OSError, yaml.YAMLError):
+            description = ""
+        custom.append({"name": p.stem, "type": "custom", "description": description})
     return builtin + custom
 
 

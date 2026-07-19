@@ -17,6 +17,7 @@ from quantagent.tools.workflows import (
     list_workflows,
     load_custom_workflow,
     run_workflow,
+    workflow_requires_target,
 )
 
 
@@ -139,6 +140,19 @@ def test_list_workflows_builtin_and_custom() -> None:
     names = {w["name"]: w["type"] for w in list_workflows()}
     assert names["daily_market_check"] == "builtin"
     assert names["my_routine"] == "custom"
+
+
+def test_list_workflows_custom_description_from_yaml() -> None:
+    _write_custom_yaml("described")
+    entry = next(w for w in list_workflows() if w["name"] == "described")
+    assert entry["description"] == "Custom test workflow"
+
+
+def test_workflow_requires_target() -> None:
+    assert workflow_requires_target("stock_research") is True
+    assert workflow_requires_target("portfolio_rebalance_review") is True
+    assert workflow_requires_target("daily_market_check") is False
+    assert workflow_requires_target("unknown_workflow") is False
 
 
 # ── Custom YAML ──────────────────────────────────────────────────────────────

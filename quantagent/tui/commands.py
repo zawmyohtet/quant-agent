@@ -84,6 +84,22 @@ def _theme_names() -> list[str]:
     return sorted(BUILTIN_THEMES)
 
 
+def _workflow_names() -> list[str]:
+    from quantagent.tools.workflows import list_workflows
+
+    return [w["name"] for w in list_workflows()]
+
+
+def _universe_names() -> list[str]:
+    from quantagent.tools.universe import list_universes
+
+    return list_universes()
+
+
+def _report_type_names() -> list[str]:
+    return [t for t, _, _ in REPORT_TYPES]
+
+
 def _handle_apikey(args: list[str], app: QuantAgentApp) -> None:
     if len(args) < 2:
         _system(app, "Usage: /apikey <provider> <key>")
@@ -237,82 +253,101 @@ async def _handle_riskgate(args: list[str], app: QuantAgentApp) -> None:
     )
 
 
-async def _handle_workflow(args: list[str], app: QuantAgentApp) -> None:
-    if not args:
-        _system(app, "Usage: /workflow <name> [target]")
-        return
-    name = args[0]
-    target = " ".join(args[1:])
+# Report types offered by the /report picker. No registry exists upstream, so the
+# TUI owns this list. (type, one-line description, whether a target is required)
+REPORT_TYPES: list[tuple[str, str, bool]] = [
+    ("market", "Daily market overview: regime, breadth, timing, exposure.", False),
+    ("sector", "Sector ranking, relative strength, and rotation.", False),
+    ("stock", "Single-stock deep dive: quote, fundamentals, news.", True),
+    ("portfolio", "Portfolio risk metrics and optimization.", True),
+    ("screening", "Run a fundamental screen and report the matches.", False),
+]
+
+
+def _workflow_prompt(name: str, target: str) -> str:
     detail = f" with target {target}" if target else ""
-    await app._submit_user_message(
-        f"Run the '{name}' workflow{detail} and walk me through the results."
-    )
+    return f"Run the '{name}' workflow{detail} and walk me through the results."
 
 
-def _handle_workflows(args: list[str], app: QuantAgentApp) -> None:
-    from quantagent.tools.workflows import list_workflows
-
-    workflows = list_workflows()
-    builtins = [w for w in workflows if w["type"] == "builtin"]
-    customs = [w for w in workflows if w["type"] == "custom"]
-
-    lines = ["**Available workflows**\n", "Run one with `/workflow <name> [target]`.\n"]
-    lines.append("_Built-in_")
-    for w in builtins:
-        desc = (w["description"] or "").strip().splitlines()[0] if w["description"] else ""
-        lines.append(f"  `{w['name']}` — {desc}")
-    if customs:
-        lines.append("\n_Custom_")
-        for w in customs:
-            lines.append(f"  `{w['name']}`")
-    _system(app, "\n".join(lines))
-
-
-async def _handle_report(args: list[str], app: QuantAgentApp) -> None:
-    if not args:
-        _system(app, "Usage: /report <market|sector|stock|portfolio|screening> [target]")
-        return
-    report_type = args[0].lower()
-    target = " ".join(args[1:])
-    detail = f" for {target}" if target else ""
-    await app._submit_user_message(
-        f"Generate a {report_type} report{detail} and save it as markdown. "
-        "Summarize the key findings."
-    )
-
-
-async def _handle_universe(args: list[str], app: QuantAgentApp) -> None:
-    if not args:
-        _system(app, "Usage: /universe <name>")
-        return
-    name = args[0].lower()
-    await app._submit_user_message(
+def _universe_prompt(name: str) -> str:
+    return (
         f"Use the '{name}' universe for screening in this conversation. "
         "Confirm it exists and tell me its symbol count."
     )
 
 
-def _handle_universes(args: list[str], app: QuantAgentApp) -> None:
-    import json
+def _report_prompt(report_type: str, target: str) -> str:
+    detail = f" for {target}" if target else ""
+    return (
+        f"Generate a {report_type} report{detail} and save it as markdown. "
+        "Summarize the key findings."
+    )
 
-    from quantagent.tools._paths import universes_dir
-    from quantagent.tools.universe import BUILTIN_UNIVERSES
 
-    lines = ["**Screening universes**\n", "Switch the active one with `/universe <name>`.\n"]
-    lines.append("_Built-in_")
-    for name in BUILTIN_UNIVERSES:
-        lines.append(f"  `{name}` — constituents fetched on demand")
+def _submit(app: QuantAgentApp, prompt: str) -> None:
+    """Fire off a user message from a (sync) picker callback."""
+    app.run_worker(app._submit_user_message(prompt))
 
-    custom_paths = sorted(universes_dir().glob("*.json"))
-    if custom_paths:
-        lines.append("\n_Custom_")
-        for path in custom_paths:
-            try:
-                count = len(json.loads(path.read_text()).get("symbols", []))
-                lines.append(f"  `{path.stem}` — {count} symbols")
-            except (OSError, ValueError):
-                lines.append(f"  `{path.stem}`")
-    _system(app, "\n".join(lines))
+
+async def _handle_workflow(args: list[str], app: QuantAgentApp) -> None:
+    if args:
+        await app._submit_user_message(_workflow_prompt(args[0], " ".join(args[1:])))
+        return
+
+    from quantagent.tools.workflows import list_workflows, workflow_requires_target
+    from quantagent.tui.widgets.picker import PickerItem, PickerScreen
+
+    items: list[PickerItem] = []
+    for w in list_workflows():
+        desc = (w["description"] or "").strip().splitlines()[0] if w["description"] else ""
+        label = f"[b]{w['name']}[/b]" + (f" — {desc}" if desc else "")
+        needs = w["type"] == "builtin" and workflow_requires_target(w["name"])
+        items.append(PickerItem(value=w["name"], label=label, needs_target=needs))
+
+    def on_select(item: PickerItem) -> None:
+        if item.needs_target:
+            app.prefill_input(f"/workflow {item.value} ")
+        else:
+            _submit(app, _workflow_prompt(item.value, ""))
+
+    app.push_screen(PickerScreen("Run workflow", items, on_select))
+
+
+async def _handle_report(args: list[str], app: QuantAgentApp) -> None:
+    if args:
+        await app._submit_user_message(_report_prompt(args[0].lower(), " ".join(args[1:])))
+        return
+
+    from quantagent.tui.widgets.picker import PickerItem, PickerScreen
+
+    items = [
+        PickerItem(value=t, label=f"[b]{t}[/b] — {desc}", needs_target=needs)
+        for t, desc, needs in REPORT_TYPES
+    ]
+
+    def on_select(item: PickerItem) -> None:
+        if item.needs_target:
+            app.prefill_input(f"/report {item.value} ")
+        else:
+            _submit(app, _report_prompt(item.value, ""))
+
+    app.push_screen(PickerScreen("Generate report", items, on_select))
+
+
+async def _handle_universe(args: list[str], app: QuantAgentApp) -> None:
+    if args:
+        await app._submit_user_message(_universe_prompt(args[0].lower()))
+        return
+
+    from quantagent.tools.universe import list_universes
+    from quantagent.tui.widgets.picker import PickerItem, PickerScreen
+
+    items = [PickerItem(value=n, label=f"[b]{n}[/b]") for n in list_universes()]
+
+    def on_select(item: PickerItem) -> None:
+        _submit(app, _universe_prompt(item.value))
+
+    app.push_screen(PickerScreen("Switch screening universe", items, on_select))
 
 
 async def _handle_heatmap(args: list[str], app: QuantAgentApp) -> None:
@@ -491,23 +526,19 @@ REGISTRY: list[SlashCommand] = [
     # Workflows & Reports
     SlashCommand(
         "workflow",
-        "/workflow <name> [target]",
-        "Run a predefined workflow.",
+        "/workflow [name] [target]",
+        "Pick and run a workflow (no name → menu).",
         _handle_workflow,
-        category="Workflows & Reports",
-    ),
-    SlashCommand(
-        "workflows",
-        "/workflows",
-        "List available workflows.",
-        _handle_workflows,
+        aliases=["workflows"],
+        arg_completer=_workflow_names,
         category="Workflows & Reports",
     ),
     SlashCommand(
         "report",
-        "/report <type> [target]",
-        "Generate a report (market/sector/stock/portfolio/screening).",
+        "/report [type] [target]",
+        "Pick and generate a report (no type → menu).",
         _handle_report,
+        arg_completer=_report_type_names,
         category="Workflows & Reports",
     ),
     SlashCommand(
@@ -520,16 +551,11 @@ REGISTRY: list[SlashCommand] = [
     # Data
     SlashCommand(
         "universe",
-        "/universe <name>",
-        "Switch active screening universe.",
+        "/universe [name]",
+        "Pick the screening universe (no name → menu).",
         _handle_universe,
-        category="Data",
-    ),
-    SlashCommand(
-        "universes",
-        "/universes",
-        "List available screening universes.",
-        _handle_universes,
+        aliases=["universes"],
+        arg_completer=_universe_names,
         category="Data",
     ),
     SlashCommand(

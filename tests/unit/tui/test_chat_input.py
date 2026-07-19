@@ -83,12 +83,11 @@ class TestChatInputDropdown:
         assert "help" in _command_names(widget)
 
     def test_matches_substring(self, widget: ChatInput) -> None:
-        # No command starts with "flow", but workflow/workflows contain it
+        # No command starts with "flow", but /workflow contains it
         widget._update_dropdown("/flow")
         assert widget._dropdown.display is True
         names = _command_names(widget)
         assert "workflow" in names
-        assert "workflows" in names
 
     def test_prefix_matches_rank_before_substring_matches(self, widget: ChatInput) -> None:
         widget._update_dropdown("/re")

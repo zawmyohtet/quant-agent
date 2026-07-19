@@ -94,7 +94,7 @@ ChatInput {
 
 /* Modals */
 
-ApprovalDialog, ThreadSelectorScreen, HelpScreen {
+ApprovalDialog, ThreadSelectorScreen, HelpScreen, PickerScreen {
     align: center middle;
 }
 
@@ -123,6 +123,27 @@ ApprovalDialog, ThreadSelectorScreen, HelpScreen {
     height: auto;
     max-height: 14;
     margin-bottom: 1;
+}
+
+#picker-dialog {
+    width: 70;
+    height: auto;
+    max-height: 20;
+    border: round $primary;
+    background: $surface;
+    padding: 1 2;
+    border-title-color: $accent;
+    border-title-style: bold;
+}
+
+#picker-list {
+    height: auto;
+    max-height: 14;
+    margin-bottom: 1;
+}
+
+#picker-list > ListItem.-highlight {
+    background: $primary 40%;
 }
 
 .modal-muted {

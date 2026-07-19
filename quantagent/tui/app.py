@@ -280,6 +280,10 @@ class QuantAgentApp(App):
         if self.runner:
             self.run_worker(self.runner.run_turn(text), exclusive=True)
 
+    def prefill_input(self, text: str) -> None:
+        """Put text into the chat input and focus it (e.g. after a picker)."""
+        self.query_one(_ID_CHAT_INPUT, ChatInput).set_text(text)
+
     def action_help(self) -> None:
         from quantagent.tui.widgets.help_screen import HelpScreen
 

@@ -123,11 +123,15 @@ class ChatInput(Vertical):
             self._apply_autocomplete(item.suggestion)
         self._dropdown.display = False
 
-    def _apply_autocomplete(self, suggestion: Suggestion) -> None:
-        """Insert the completed text and move cursor to the end."""
-        self._input.value = suggestion.insert_text
+    def set_text(self, text: str) -> None:
+        """Replace the input contents, focus it, and move cursor to the end."""
+        self._input.value = text
         self._input.focus()
         self._input.cursor_position = len(self._input.value)
+
+    def _apply_autocomplete(self, suggestion: Suggestion) -> None:
+        """Insert the completed text and move cursor to the end."""
+        self.set_text(suggestion.insert_text)
 
     def _update_dropdown(self, text: str) -> None:
         body = text[1:]
