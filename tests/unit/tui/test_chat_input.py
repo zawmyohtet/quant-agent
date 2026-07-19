@@ -158,15 +158,26 @@ class TestModeAutocomplete:
         widget._update_dropdown("/stock AA")
         assert widget._dropdown.display is False
 
-    def test_bare_trailing_space_does_not_pop_menu(self, widget: ChatInput) -> None:
-        # Typing a space after the symbol must not open the mode menu; otherwise
-        # it also re-opens right after a mode is applied (trailing space).
-        widget._update_dropdown("/stock SPCX ")
-        assert widget._dropdown.display is False
+    def test_shows_all_modes_after_symbol_space(self, widget: ChatInput) -> None:
+        # A bare trailing space lists all modes so they are discoverable.
+        widget._update_dropdown("/stock AAPL ")
+        assert widget._dropdown.display is True
+        texts = _insert_texts(widget)
+        assert "/stock AAPL quick " in texts
+        assert "/stock AAPL report " in texts
 
-    def test_applied_mode_does_not_reopen_menu(self, widget: ChatInput) -> None:
-        # Simulate the Changed event fired when a mode suggestion is applied.
-        widget._update_dropdown("/stock SPCX quick ")
+    def test_no_positional_command_shows_modes_on_space(self, widget: ChatInput) -> None:
+        # /market takes no positional, so a bare space shows modes immediately.
+        widget._update_dropdown("/market ")
+        assert widget._dropdown.display is True
+        texts = _insert_texts(widget)
+        assert "/market quick " in texts
+        assert "/market report " in texts
+        assert "/market heatmap " in texts
+
+    def test_modes_wait_for_required_positional(self, widget: ChatInput) -> None:
+        # /stock needs a symbol first: a bare space must not offer modes yet.
+        widget._update_dropdown("/stock ")
         assert widget._dropdown.display is False
 
 
@@ -219,6 +230,27 @@ class TestChatInputAutocomplete:
             # "/the" would normally surface the /theme command suggestion; the
             # programmatic set_text must not let the Changed event re-open it.
             widget.set_text("/the")
+            await pilot.pause()
+            assert widget._dropdown.display is False
+
+    async def test_selecting_mode_closes_dropdown(self) -> None:
+        from textual.app import App
+
+        class _App(App[None]):
+            def compose(self) -> Any:
+                yield ChatInput()
+
+        app = _App()
+        async with app.run_test() as pilot:
+            widget = app.query_one(ChatInput)
+            # Typing a space opens the mode menu…
+            widget._input.value = "/stock AAPL "
+            await pilot.pause()
+            assert widget._dropdown.display is True
+            # …and selecting a mode closes it and keeps it closed.
+            widget._apply_autocomplete(
+                Suggestion(label="quick", insert_text="/stock AAPL quick ")
+            )
             await pilot.pause()
             assert widget._dropdown.display is False
 

@@ -133,7 +133,10 @@ class ChatInput(Vertical):
 
     def set_text(self, text: str) -> None:
         """Replace the input contents, focus it, and move cursor to the end."""
-        self._suppress_dropdown = True
+        # Only arm suppression when the value actually changes; an unchanged
+        # value fires no Changed event and would leave the flag armed, swallowing
+        # the next real keystroke's dropdown.
+        self._suppress_dropdown = text != self._input.value
         self._input.value = text
         self._input.focus()
         self._input.cursor_position = len(self._input.value)
@@ -197,22 +200,29 @@ class ChatInput(Vertical):
                 Suggestion(label=f"[b]{value}[/b]", insert_text=f"/{cmd.name} {value} ")
                 for value in matches
             ]
-        # Trailing mode-word completion (e.g. /stock AAPL quick), only while a
-        # non-empty mode prefix is being typed — a bare trailing space must not
-        # pop the menu (and must not re-open it after a mode is applied).
-        if cmd.modes and " " in rest:
-            partial = rest.rsplit(" ", 1)[-1].lower()
-            if not partial:
-                return []
-            head = body[: len(body) - len(partial)]
-            matches = [m for m in cmd.modes if m.startswith(partial)]
-            return [
-                Suggestion(
-                    label=f"[b]{mode}[/b] [dim](mode)[/dim]",
-                    insert_text=f"/{head}{mode} ",
-                )
-                for mode in matches
-            ]
+        # Trailing mode-word completion (e.g. /stock AAPL quick). The mode is the
+        # last token; everything before it is positional. Modes appear once enough
+        # positional args are present (mode_min_args) — so `/market ` shows them
+        # immediately while `/stock ` waits for a symbol. A bare trailing space
+        # lists all modes so they are discoverable without memorizing them;
+        # applying one does not re-open the menu (see the _suppress_dropdown guard
+        # in on_input_changed).
+        if cmd.modes:
+            tokens = rest.split()
+            if rest.endswith(" ") or not rest:
+                partial, positional = "", tokens
+            else:
+                partial, positional = tokens[-1].lower(), tokens[:-1]
+            if len(positional) >= cmd.mode_min_args:
+                head = body[: len(body) - len(partial)]
+                return [
+                    Suggestion(
+                        label=f"[b]{mode}[/b] [dim](mode)[/dim]",
+                        insert_text=f"/{head}{mode} ",
+                    )
+                    for mode in cmd.modes
+                    if mode.startswith(partial)
+                ]
         return []
 
     def _autocomplete(self) -> None:

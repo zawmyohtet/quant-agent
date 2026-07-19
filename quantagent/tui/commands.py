@@ -29,6 +29,9 @@ class SlashCommand:
     aliases: list[str] = field(default_factory=list)
     arg_completer: Callable[[], list[str]] | None = None
     modes: list[str] = field(default_factory=list)
+    # Positional args required before mode words are offered (e.g. /stock needs a
+    # symbol first; /market takes none, so modes appear right after the space).
+    mode_min_args: int = 0
     category: str = "General"
 
 
@@ -646,6 +649,7 @@ REGISTRY: list[SlashCommand] = [
         _handle_stock,
         aliases=["analyze", "compare"],
         modes=["quick", "report"],
+        mode_min_args=1,
         category="Analysis",
     ),
     SlashCommand(
@@ -671,6 +675,7 @@ REGISTRY: list[SlashCommand] = [
         "Screen stocks matching criteria.",
         _handle_screen,
         modes=["quick", "report"],
+        mode_min_args=1,
         category="Analysis",
     ),
     SlashCommand(
