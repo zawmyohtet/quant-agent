@@ -243,6 +243,58 @@ def _run_deterministic(
     app.run_worker(_worker())
 
 
+def _scalar(value: object) -> str:
+    """Render a scalar step value; summarize nested containers."""
+    if isinstance(value, float):
+        return f"{value:,.4f}".rstrip("0").rstrip(".")
+    if isinstance(value, dict):
+        return ", ".join(f"{k}: {v}" for k, v in list(value.items())[:6])
+    if isinstance(value, (list, tuple)):
+        return ", ".join(str(v) for v in value[:6])
+    return str(value)
+
+
+def _headline(item: dict) -> str:
+    for key in ("title", "headline", "name", "symbol", "ticker"):
+        if item.get(key):
+            return str(item[key])
+    return _scalar(item)
+
+
+def _format_step_value(value: object) -> str:
+    import pandas as pd
+
+    from quantagent.tools.reports.base import df_to_markdown
+
+    if isinstance(value, pd.DataFrame):
+        return df_to_markdown(value)
+    if isinstance(value, dict):
+        if not value:
+            return "_None._"
+        return "\n".join(f"- **{k}**: {_scalar(v)}" for k, v in value.items())
+    if isinstance(value, (list, tuple)):
+        if not value:
+            return "_None._"
+        if all(isinstance(x, dict) for x in value):
+            return "\n".join(f"- {_headline(x)}" for x in value[:15])
+        return "\n".join(f"- {v}" for v in value[:15])
+    return str(value)
+
+
+def _render_workflow_result(result: object) -> str:
+    """Render a WorkflowResult's step outputs as human-readable Markdown.
+
+    Uses the real step values (unlike ``WorkflowResult.summary``, which only
+    describes their shape and is meant for the agent).
+    """
+    lines: list[str] = []
+    for key, value in result.step_results.items():  # type: ignore[attr-defined]
+        lines.append(f"### {key.replace('_', ' ').title()}")
+        lines.append(_format_step_value(value))
+        lines.append("")
+    return "\n".join(lines).rstrip() or "Workflow completed."
+
+
 def _run_workflow_det(
     app: QuantAgentApp, name: str, target: str = "", *, label: str, note: str = ""
 ) -> None:
@@ -251,7 +303,7 @@ def _run_workflow_det(
 
         workflow = get_workflow(name, target)
         result = await run_workflow(app.get_provider(), workflow)
-        body = result.summary or "Workflow completed."
+        body = _render_workflow_result(result)
         return f"_{note}_\n\n{body}" if note else body
 
     _run_deterministic(app, label=label, run=run)

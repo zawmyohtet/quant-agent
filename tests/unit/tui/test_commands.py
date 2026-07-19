@@ -16,6 +16,7 @@ from quantagent.tui.commands import (
     _handle_universe,
     _handle_warm,
     _handle_workflow,
+    _render_workflow_result,
     _split_mode,
     find_command,
 )
@@ -202,6 +203,33 @@ class TestSlashCommandDelegation:
         with patch.object(app, "query_one", return_value=mock_messages):
             await _handle_retry([], app)
             mock_messages.add_system_message.assert_called_once()
+
+
+class TestWorkflowResultRendering:
+    """Quick mode must render real step values, not dict shapes."""
+
+    def test_renders_real_values(self) -> None:
+        import pandas as pd
+
+        result = MagicMock()
+        result.step_results = {
+            "quote": {"symbol": "AAPL", "price": 200.0},
+            "news": [{"title": "Apple hits record"}, {"title": "Analysts upbeat"}],
+            "candidates": pd.DataFrame({"symbol": ["AAPL"], "pe": [28.5]}),
+        }
+        rendered = _render_workflow_result(result)
+        assert "AAPL" in rendered
+        assert "200" in rendered
+        assert "Apple hits record" in rendered
+        assert "28.5" in rendered
+        # No shape-only descriptions leak through.
+        assert "dict (" not in rendered
+        assert "list (" not in rendered
+
+    def test_empty_result(self) -> None:
+        result = MagicMock()
+        result.step_results = {}
+        assert _render_workflow_result(result) == "Workflow completed."
 
 
 class TestDeterministicModes:

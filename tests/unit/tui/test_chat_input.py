@@ -149,13 +149,6 @@ class TestModeAutocomplete:
         assert widget._dropdown.display is True
         assert "/stock AAPL quick " in _insert_texts(widget)
 
-    def test_shows_all_modes_after_symbol_space(self, widget: ChatInput) -> None:
-        widget._update_dropdown("/stock AAPL ")
-        assert widget._dropdown.display is True
-        texts = _insert_texts(widget)
-        assert "/stock AAPL quick " in texts
-        assert "/stock AAPL report " in texts
-
     def test_preserves_multiple_positionals(self, widget: ChatInput) -> None:
         widget._update_dropdown("/stock AAPL MSFT quic")
         assert "/stock AAPL MSFT quick " in _insert_texts(widget)
@@ -163,6 +156,17 @@ class TestModeAutocomplete:
     def test_no_mode_completion_for_first_arg(self, widget: ChatInput) -> None:
         # First token is the symbol, not a mode; /stock has no arg_completer.
         widget._update_dropdown("/stock AA")
+        assert widget._dropdown.display is False
+
+    def test_bare_trailing_space_does_not_pop_menu(self, widget: ChatInput) -> None:
+        # Typing a space after the symbol must not open the mode menu; otherwise
+        # it also re-opens right after a mode is applied (trailing space).
+        widget._update_dropdown("/stock SPCX ")
+        assert widget._dropdown.display is False
+
+    def test_applied_mode_does_not_reopen_menu(self, widget: ChatInput) -> None:
+        # Simulate the Changed event fired when a mode suggestion is applied.
+        widget._update_dropdown("/stock SPCX quick ")
         assert widget._dropdown.display is False
 
 
@@ -201,6 +205,22 @@ class TestChatInputAutocomplete:
             widget._apply_autocomplete(Suggestion(label="/screen", insert_text="/screen "))
             assert widget._input.value == "/screen "
             assert widget._input.cursor_position == len("/screen ")
+
+    async def test_set_text_suppresses_dropdown_reopen(self) -> None:
+        from textual.app import App
+
+        class _App(App[None]):
+            def compose(self) -> Any:
+                yield ChatInput()
+
+        app = _App()
+        async with app.run_test() as pilot:
+            widget = app.query_one(ChatInput)
+            # "/the" would normally surface the /theme command suggestion; the
+            # programmatic set_text must not let the Changed event re-open it.
+            widget.set_text("/the")
+            await pilot.pause()
+            assert widget._dropdown.display is False
 
 
 class TestChatInputNavigation:

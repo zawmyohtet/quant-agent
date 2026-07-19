@@ -60,6 +60,10 @@ class ChatInput(Vertical):
         self._dropdown = ListView(id="chat-input-dropdown")
         self._dropdown.display = False
         self._dropdown.can_focus = False
+        # Set when we change the input value programmatically (autocomplete /
+        # picker prefill) so the resulting Changed event does not re-open the
+        # dropdown we just applied.
+        self._suppress_dropdown = False
 
     def compose(self) -> ComposeResult:
         yield self._dropdown
@@ -72,6 +76,10 @@ class ChatInput(Vertical):
 
     def on_input_changed(self, event: Input.Changed) -> None:
         self.value = event.value
+        if self._suppress_dropdown:
+            self._suppress_dropdown = False
+            self._dropdown.display = False
+            return
         if event.value.startswith("/"):
             self._update_dropdown(event.value)
         else:
@@ -125,6 +133,7 @@ class ChatInput(Vertical):
 
     def set_text(self, text: str) -> None:
         """Replace the input contents, focus it, and move cursor to the end."""
+        self._suppress_dropdown = True
         self._input.value = text
         self._input.focus()
         self._input.cursor_position = len(self._input.value)
@@ -188,10 +197,13 @@ class ChatInput(Vertical):
                 Suggestion(label=f"[b]{value}[/b]", insert_text=f"/{cmd.name} {value} ")
                 for value in matches
             ]
-        # Trailing mode-word completion (e.g. /stock AAPL quick), once at least
-        # one positional argument has been typed.
+        # Trailing mode-word completion (e.g. /stock AAPL quick), only while a
+        # non-empty mode prefix is being typed — a bare trailing space must not
+        # pop the menu (and must not re-open it after a mode is applied).
         if cmd.modes and " " in rest:
             partial = rest.rsplit(" ", 1)[-1].lower()
+            if not partial:
+                return []
             head = body[: len(body) - len(partial)]
             matches = [m for m in cmd.modes if m.startswith(partial)]
             return [
