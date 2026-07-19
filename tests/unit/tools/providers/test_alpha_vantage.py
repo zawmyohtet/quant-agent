@@ -92,13 +92,15 @@ async def test_search_symbols_empty(mock_to_thread: MagicMock, av_provider: Alph
 
 @patch("quantagent.tools.providers.alpha_vantage.asyncio.to_thread")
 async def test_get_news(mock_to_thread: MagicMock, av_provider: AlphaVantageProvider) -> None:
+    # Relative to now so it always falls inside get_news's day window.
+    recent = (pd.Timestamp.now(tz="UTC") - pd.Timedelta(days=1)).strftime("%Y%m%dT%H%M%S")
     mock_to_thread.return_value = (
         [
             {
                 "title": "AAPL news",
                 "source": "Reuters",
                 "url": "https://example.com",
-                "time_published": "20260712T120000",
+                "time_published": recent,
                 "overall_sentiment_score": 0.5,
             }
         ],

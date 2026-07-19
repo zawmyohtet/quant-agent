@@ -1,7 +1,7 @@
 """Tests for Polygon.io provider."""
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pandas as pd
@@ -48,7 +48,10 @@ class _MockNewsItem:
     def __init__(self) -> None:
         self.title = "AAPL news"
         self.article_url = "https://example.com"
-        self.published_utc = "2026-07-12T12:00:00Z"
+        # Relative to now so it always falls inside get_news's day window.
+        self.published_utc = (datetime.now(UTC) - timedelta(days=1)).strftime(
+            "%Y-%m-%dT%H:%M:%SZ"
+        )
         self.publisher = _MockPublisher()
 
 
