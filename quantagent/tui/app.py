@@ -99,6 +99,7 @@ class QuantAgentApp(App):
         self.state = SessionState(config=config)
         self.runner: AgentRunner | None = None
         self._event_consumer: asyncio.Task | None = None
+        self._provider_cache: tuple[str, Any] | None = None
         if config.theme in self.available_themes:
             self.theme = config.theme
         else:
@@ -283,6 +284,19 @@ class QuantAgentApp(App):
     def prefill_input(self, text: str) -> None:
         """Put text into the chat input and focus it (e.g. after a picker)."""
         self.query_one(_ID_CHAT_INPUT, ChatInput).set_text(text)
+
+    def get_provider(self) -> Any:
+        """Return the active data provider, cached and keyed on config.provider.
+
+        Rebuilt automatically when the configured provider changes (e.g. via
+        /provider), so deterministic commands always use the current one.
+        """
+        from quantagent.tools.providers import get_active_provider
+
+        name = self.config.provider
+        if self._provider_cache is None or self._provider_cache[0] != name:
+            self._provider_cache = (name, get_active_provider(self.config))
+        return self._provider_cache[1]
 
     def action_help(self) -> None:
         from quantagent.tui.widgets.help_screen import HelpScreen

@@ -28,6 +28,7 @@ class SlashCommand:
     handler: Callable[[list[str], QuantAgentApp], None | Awaitable[None]]
     aliases: list[str] = field(default_factory=list)
     arg_completer: Callable[[], list[str]] | None = None
+    modes: list[str] = field(default_factory=list)
     category: str = "General"
 
 
@@ -187,12 +188,114 @@ def _handle_exit(args: list[str], app: QuantAgentApp) -> None:
     app.exit()
 
 
-async def _handle_analyze(args: list[str], app: QuantAgentApp) -> None:
-    if not args:
-        _system(app, "Usage: /analyze <SYMBOL>")
+# ── Domain-command helpers ───────────────────────────────────────────────────
+# Each analysis domain (stock/market/sector/screen) is one command with an
+# optional trailing mode: default runs a free-form LLM turn; "quick" runs the
+# matching deterministic workflow; "report" generates the markdown report. The
+# deterministic modes skip the agent entirely — faster, cheaper, reproducible.
+
+# Report types that need a target (sector name, ticker, tickers). Mirrors the
+# dispatch in quantagent.agent.tools_registry._build_report.
+_REPORT_NEEDS_TARGET = {"sector", "stock", "portfolio"}
+
+
+def _split_mode(args: list[str], valid: set[str], default: str = "") -> tuple[str, list[str]]:
+    """Peel a trailing mode word off the argument list.
+
+    Mode words are reserved and lowercase; tickers are uppercased before use,
+    so a symbol can never be mistaken for a mode.
+    """
+    if args and args[-1].lower() in valid:
+        return args[-1].lower(), args[:-1]
+    return default, args
+
+
+def _run_deterministic(
+    app: QuantAgentApp,
+    *,
+    label: str,
+    run: Callable[[], Awaitable[str]],
+) -> None:
+    """Run an async deterministic task in a worker and render its markdown result.
+
+    Blocks if a turn is already running; surfaces any failure as an error
+    message rather than crashing the TUI.
+    """
+    if app.state.is_running:
+        _system(app, "Busy — wait for the current task to finish, or press esc to stop it.")
         return
-    symbol = args[0].upper()
-    await app._submit_user_message(f"Perform a full analysis of {symbol}")
+    messages = app.query_one("#messages", MessageView)
+    _system(app, f"Running {label}…")
+    app.state.start_turn()
+    app.state.current_activity = label
+    _refresh_status(app)
+
+    async def _worker() -> None:
+        try:
+            messages.add_assistant_message(await run())
+        except Exception as exc:  # noqa: BLE001 — any failure is shown to the user
+            logger.exception("Deterministic command '%s' failed", label)
+            messages.add_error_message(str(exc))
+        finally:
+            app.state.end_turn()
+            _refresh_status(app)
+
+    app.run_worker(_worker())
+
+
+def _run_workflow_det(
+    app: QuantAgentApp, name: str, target: str = "", *, label: str, note: str = ""
+) -> None:
+    async def run() -> str:
+        from quantagent.tools.workflows import get_workflow, run_workflow
+
+        workflow = get_workflow(name, target)
+        result = await run_workflow(app.get_provider(), workflow)
+        body = result.summary or "Workflow completed."
+        return f"_{note}_\n\n{body}" if note else body
+
+    _run_deterministic(app, label=label, run=run)
+
+
+def _run_report_det(app: QuantAgentApp, report_type: str, target: str, *, label: str) -> None:
+    async def run() -> str:
+        from datetime import UTC, datetime
+
+        from quantagent.agent.tools_registry import _build_report
+        from quantagent.tools._paths import reports_dir
+        from quantagent.tools.reports import export_report_markdown, render_markdown
+
+        report = await _build_report(app.get_provider(), report_type, target, "", "sp500")
+        out_dir = reports_dir()
+        out_dir.mkdir(parents=True, exist_ok=True)
+        slug = f"{report_type}{'-' + target.lower() if target else ''}"
+        stamp = datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
+        path = out_dir / f"{slug}-{stamp}.md"
+        export_report_markdown(report, path)
+        return f"_Saved to `{path}`_\n\n{render_markdown(report)}"
+
+    _run_deterministic(app, label=label, run=run)
+
+
+async def _handle_stock(args: list[str], app: QuantAgentApp) -> None:
+    mode, rest = _split_mode(args, {"quick", "report"})
+    symbols = [s.upper() for s in rest]
+    if not symbols:
+        _system(app, "Usage: /stock <SYMBOL> [quick|report]")
+        return
+    if mode == "quick":
+        _run_workflow_det(app, "stock_research", symbols[0], label=f"stock_research {symbols[0]}")
+        return
+    if mode == "report":
+        _run_report_det(app, "stock", symbols[0], label=f"stock report {symbols[0]}")
+        return
+    if len(symbols) == 1:
+        await app._submit_user_message(
+            f"Perform a full analysis of {symbols[0]}: quote, technicals, "
+            "fundamentals, valuation, recent news, and an overall view."
+        )
+    else:
+        await app._submit_user_message(f"Compare {' '.join(symbols)}")
 
 
 async def _handle_backtest(args: list[str], app: QuantAgentApp) -> None:
@@ -204,14 +307,40 @@ async def _handle_backtest(args: list[str], app: QuantAgentApp) -> None:
 
 
 async def _handle_screen(args: list[str], app: QuantAgentApp) -> None:
-    if not args:
-        _system(app, "Usage: /screen <criteria>")
+    mode, rest = _split_mode(args, {"quick", "report"})
+    criteria = " ".join(rest)
+    if mode == "quick":
+        _run_workflow_det(
+            app,
+            "screening_pipeline",
+            label="screening_pipeline",
+            note="Free-text criteria apply only in the default mode; running the default screen.",
+        )
         return
-    criteria = " ".join(args)
+    if mode == "report":
+        _run_report_det(app, "screening", "fundamental", label="screening report")
+        return
+    if not criteria:
+        _system(app, "Usage: /screen <criteria> [quick|report]")
+        return
     await app._submit_user_message(f"Screen stocks where {criteria}")
 
 
 async def _handle_market(args: list[str], app: QuantAgentApp) -> None:
+    if args and args[0].lower() == "heatmap":
+        metric = args[1] if len(args) > 1 else "performance"
+        await app._submit_user_message(
+            f"Generate a market heatmap by sector using the {metric} metric "
+            "and summarize what stands out."
+        )
+        return
+    mode, _rest = _split_mode(args, {"quick", "report"})
+    if mode == "quick":
+        _run_workflow_det(app, "daily_market_check", label="daily_market_check")
+        return
+    if mode == "report":
+        _run_report_det(app, "market", "", label="market report")
+        return
     await app._submit_user_message(
         "Give me a market overview: current regime, timing signals "
         "(distribution days, follow-through day), breadth, sector performance, "
@@ -220,8 +349,18 @@ async def _handle_market(args: list[str], app: QuantAgentApp) -> None:
 
 
 async def _handle_sector(args: list[str], app: QuantAgentApp) -> None:
-    if args:
-        sector = " ".join(args)
+    mode, rest = _split_mode(args, {"quick", "report"})
+    sector = " ".join(rest)
+    if mode == "quick":
+        _run_workflow_det(app, "weekly_sector_review", label="weekly_sector_review")
+        return
+    if mode == "report":
+        if not sector:
+            _system(app, "Usage: /sector <name> report")
+            return
+        _run_report_det(app, "sector", sector, label=f"sector report {sector}")
+        return
+    if sector:
         await app._submit_user_message(
             f"Analyze the {sector} sector: performance across timeframes, "
             "relative strength vs SPY, top industries, and rotation context."
@@ -234,7 +373,7 @@ async def _handle_sector(args: list[str], app: QuantAgentApp) -> None:
 
 
 async def _handle_journal(args: list[str], app: QuantAgentApp) -> None:
-    if args and args[0] == "add":
+    if args and args[0].lower() == "add":
         if len(args) < 3:
             _system(app, "Usage: /journal add <SYMBOL> <thesis>")
             return
@@ -244,12 +383,9 @@ async def _handle_journal(args: list[str], app: QuantAgentApp) -> None:
             f"{thesis}. Ask me for the entry plan, target, and stop if needed."
         )
         return
-    await app._submit_user_message("Show my trade journal: open trades, recent history, and stats.")
-
-
-async def _handle_riskgate(args: list[str], app: QuantAgentApp) -> None:
     await app._submit_user_message(
-        "Check the risk circuit breaker and summarize my current trading discipline status."
+        "Show my trade journal: open trades, recent history, and stats. Also check "
+        "the risk circuit breaker and summarize my current trading discipline status."
     )
 
 
@@ -350,14 +486,6 @@ async def _handle_universe(args: list[str], app: QuantAgentApp) -> None:
     app.push_screen(PickerScreen("Switch screening universe", items, on_select))
 
 
-async def _handle_heatmap(args: list[str], app: QuantAgentApp) -> None:
-    metric = args[0] if args else "performance"
-    await app._submit_user_message(
-        f"Generate a market heatmap by sector using the {metric} metric "
-        "and summarize what stands out."
-    )
-
-
 async def _handle_warm(args: list[str], app: QuantAgentApp) -> None:
     universe = args[0].lower() if args else "sp500"
     await app._submit_user_message(
@@ -365,14 +493,6 @@ async def _handle_warm(args: list[str], app: QuantAgentApp) -> None:
         "warm_breadth_cache tool, then confirm how many symbols and rows "
         "were ingested. Note this can take several minutes."
     )
-
-
-async def _handle_compare(args: list[str], app: QuantAgentApp) -> None:
-    if len(args) < 2:
-        _system(app, "Usage: /compare <SYM1> <SYM2> ...")
-        return
-    symbols = " ".join(s.upper() for s in args)
-    await app._submit_user_message(f"Compare {symbols}")
 
 
 def _handle_help(args: list[str], app: QuantAgentApp) -> None:
@@ -468,10 +588,37 @@ REGISTRY: list[SlashCommand] = [
     ),
     # Analysis
     SlashCommand(
-        "analyze",
-        "/analyze <SYMBOL>",
-        "Perform full analysis of a stock.",
-        _handle_analyze,
+        "stock",
+        "/stock <SYMBOL...> [quick|report]",
+        "Analyze a stock (quick=fast pipeline, report=markdown; many symbols=compare).",
+        _handle_stock,
+        aliases=["analyze", "compare"],
+        modes=["quick", "report"],
+        category="Analysis",
+    ),
+    SlashCommand(
+        "market",
+        "/market [quick|report|heatmap]",
+        "Market overview: regime, breadth, timing, exposure.",
+        _handle_market,
+        aliases=["heatmap"],
+        modes=["quick", "report", "heatmap"],
+        category="Analysis",
+    ),
+    SlashCommand(
+        "sector",
+        "/sector [name] [quick|report]",
+        "Sector analysis (all sectors, or one by name).",
+        _handle_sector,
+        modes=["quick", "report"],
+        category="Analysis",
+    ),
+    SlashCommand(
+        "screen",
+        "/screen <criteria> [quick|report]",
+        "Screen stocks matching criteria.",
+        _handle_screen,
+        modes=["quick", "report"],
         category="Analysis",
     ),
     SlashCommand(
@@ -479,48 +626,6 @@ REGISTRY: list[SlashCommand] = [
         "/backtest <SYMBOL> <strategy>",
         "Run a backtest for a symbol using a strategy.",
         _handle_backtest,
-        category="Analysis",
-    ),
-    SlashCommand(
-        "compare",
-        "/compare <SYM1> <SYM2> ...",
-        "Compare multiple stocks.",
-        _handle_compare,
-        category="Analysis",
-    ),
-    SlashCommand(
-        "screen",
-        "/screen <criteria>",
-        "Screen stocks matching criteria.",
-        _handle_screen,
-        category="Analysis",
-    ),
-    SlashCommand(
-        "market",
-        "/market",
-        "Market overview: regime, breadth, timing, exposure.",
-        _handle_market,
-        category="Analysis",
-    ),
-    SlashCommand(
-        "sector",
-        "/sector [name]",
-        "Sector analysis (all sectors, or one by name).",
-        _handle_sector,
-        category="Analysis",
-    ),
-    SlashCommand(
-        "heatmap",
-        "/heatmap [metric]",
-        "Market heatmap (performance/volume/volatility/rsi).",
-        _handle_heatmap,
-        category="Analysis",
-    ),
-    SlashCommand(
-        "riskgate",
-        "/riskgate",
-        "Check circuit breaker & discipline status.",
-        _handle_riskgate,
         category="Analysis",
     ),
     # Workflows & Reports
@@ -544,8 +649,9 @@ REGISTRY: list[SlashCommand] = [
     SlashCommand(
         "journal",
         "/journal [add <SYMBOL> <thesis>]",
-        "View trade journal, or log a trade idea.",
+        "Trade journal + risk circuit-breaker status, or log a trade idea.",
         _handle_journal,
+        aliases=["riskgate"],
         category="Workflows & Reports",
     ),
     # Data

@@ -31,6 +31,22 @@ class TestMessageView:
         assert view._agent_buffer_id is None
 
 
+class TestAssistantMessage:
+    def test_add_assistant_message_renders_as_agent(self) -> None:
+        view = _make_view()
+        view.add_assistant_message("# Heading\n\nbody")
+        entry = view._all_entries[-1]
+        assert entry.kind == "agent"
+        assert entry.content == "# Heading\n\nbody"
+
+    def test_add_assistant_message_does_not_touch_stream_buffer(self) -> None:
+        view = _make_view()
+        view.begin_agent_message()
+        buffer_id = view._agent_buffer_id
+        view.add_assistant_message("done")
+        assert view._agent_buffer_id == buffer_id
+
+
 class TestToolProgress:
     def test_updates_running_tool_line(self) -> None:
         view = _make_view()

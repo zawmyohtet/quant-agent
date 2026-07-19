@@ -97,6 +97,16 @@ class MessageView(ScrollableContainer):
             entry.content = f"{entry.metadata['tool_name']} — {status}"
             self._update_dom(entry)
 
+    def add_assistant_message(self, text: str) -> None:
+        """Append a complete assistant message rendered as Markdown.
+
+        Unlike ``begin_agent_message``, this is a one-shot entry for
+        deterministic (non-streamed) output and does not touch the streaming
+        buffer id.
+        """
+        entry = _MessageEntry(message_id=self._new_id(), kind="agent", content=text)
+        self._append_entry(entry)
+
     def add_system_message(self, text: str) -> None:
         entry = _MessageEntry(message_id=self._new_id(), kind="system", content=text)
         self._append_entry(entry)

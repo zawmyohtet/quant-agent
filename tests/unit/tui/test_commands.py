@@ -7,15 +7,16 @@ import pytest
 from quantagent.tui.app import QuantAgentApp
 from quantagent.tui.commands import (
     REGISTRY,
-    _handle_analyze,
     _handle_backtest,
-    _handle_compare,
     _handle_report,
     _handle_retry,
     _handle_screen,
+    _handle_sector,
+    _handle_stock,
     _handle_universe,
     _handle_warm,
     _handle_workflow,
+    _split_mode,
     find_command,
 )
 from quantagent.tui.config import QuantAgentConfig
@@ -45,6 +46,33 @@ class TestSlashCommands:
         # names now resolve to the picker-opening action commands.
         assert find_command("workflows") is find_command("workflow")
         assert find_command("universes") is find_command("universe")
+
+    def test_domain_command_aliases(self) -> None:
+        # Old per-feature commands now resolve to the consolidated domain command.
+        assert find_command("analyze") is find_command("stock")
+        assert find_command("compare") is find_command("stock")
+        assert find_command("heatmap") is find_command("market")
+        assert find_command("riskgate") is find_command("journal")
+
+
+class TestSplitMode:
+    def test_trailing_mode_extracted(self) -> None:
+        assert _split_mode(["AAPL", "MSFT", "quick"], {"quick", "report"}) == (
+            "quick",
+            ["AAPL", "MSFT"],
+        )
+
+    def test_no_mode_returns_default(self) -> None:
+        assert _split_mode(["AAPL"], {"quick", "report"}) == ("", ["AAPL"])
+
+    def test_multiword_positional_preserved(self) -> None:
+        assert _split_mode(["pe", "<", "20", "report"], {"quick", "report"}) == (
+            "report",
+            ["pe", "<", "20"],
+        )
+
+    def test_empty_args(self) -> None:
+        assert _split_mode([], {"quick", "report"}) == ("", [])
 
 
 class TestPickerCommands:
@@ -109,11 +137,19 @@ class TestSlashCommandDelegation:
     """Verify slash commands delegate to app._submit_user_message."""
 
     @pytest.mark.asyncio
-    async def test_analyze_delegates_to_app_submit(self, app: QuantAgentApp) -> None:
+    async def test_stock_default_delegates_to_app_submit(self, app: QuantAgentApp) -> None:
         app.runner = MagicMock()
         with patch.object(app, "_submit_user_message") as mock_submit:
-            await _handle_analyze(["AAPL"], app)
-            mock_submit.assert_called_once_with("Perform a full analysis of AAPL")
+            await _handle_stock(["AAPL"], app)
+            mock_submit.assert_called_once()
+            assert "AAPL" in mock_submit.call_args.args[0]
+
+    @pytest.mark.asyncio
+    async def test_stock_multi_symbol_compares(self, app: QuantAgentApp) -> None:
+        app.runner = MagicMock()
+        with patch.object(app, "_submit_user_message") as mock_submit:
+            await _handle_stock(["AAPL", "GOOGL"], app)
+            mock_submit.assert_called_once_with("Compare AAPL GOOGL")
 
     @pytest.mark.asyncio
     async def test_backtest_delegates_to_app_submit(self, app: QuantAgentApp) -> None:
@@ -130,13 +166,6 @@ class TestSlashCommandDelegation:
         with patch.object(app, "_submit_user_message") as mock_submit:
             await _handle_screen(["pe < 20"], app)
             mock_submit.assert_called_once_with("Screen stocks where pe < 20")
-
-    @pytest.mark.asyncio
-    async def test_compare_delegates_to_app_submit(self, app: QuantAgentApp) -> None:
-        app.runner = MagicMock()
-        with patch.object(app, "_submit_user_message") as mock_submit:
-            await _handle_compare(["AAPL", "GOOGL"], app)
-            mock_submit.assert_called_once_with("Compare AAPL GOOGL")
 
     @pytest.mark.asyncio
     async def test_warm_defaults_to_sp500(self, app: QuantAgentApp) -> None:
@@ -173,3 +202,57 @@ class TestSlashCommandDelegation:
         with patch.object(app, "query_one", return_value=mock_messages):
             await _handle_retry([], app)
             mock_messages.add_system_message.assert_called_once()
+
+
+class TestDeterministicModes:
+    """quick/report modes schedule a deterministic worker, not an agent turn."""
+
+    @pytest.mark.asyncio
+    async def test_stock_quick_schedules_worker(self, app: QuantAgentApp) -> None:
+        with (
+            patch.object(app, "query_one", return_value=MagicMock()),
+            patch.object(app, "get_provider", return_value=MagicMock()),
+            patch.object(app, "run_worker", side_effect=lambda coro: coro.close()) as worker,
+            patch.object(app, "_submit_user_message") as submit,
+        ):
+            await _handle_stock(["AAPL", "quick"], app)
+        worker.assert_called_once()
+        submit.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_stock_report_schedules_worker(self, app: QuantAgentApp) -> None:
+        with (
+            patch.object(app, "query_one", return_value=MagicMock()),
+            patch.object(app, "get_provider", return_value=MagicMock()),
+            patch.object(app, "run_worker", side_effect=lambda coro: coro.close()) as worker,
+            patch.object(app, "_submit_user_message") as submit,
+        ):
+            await _handle_stock(["AAPL", "report"], app)
+        worker.assert_called_once()
+        submit.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_sector_report_without_name_errors(self, app: QuantAgentApp) -> None:
+        messages = MagicMock()
+        with (
+            patch.object(app, "query_one", return_value=messages),
+            patch.object(app, "run_worker") as worker,
+            patch.object(app, "_submit_user_message") as submit,
+        ):
+            await _handle_sector(["report"], app)
+        worker.assert_not_called()
+        submit.assert_not_called()
+        messages.add_system_message.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_deterministic_blocked_while_running(self, app: QuantAgentApp) -> None:
+        app.state.is_running = True
+        messages = MagicMock()
+        with (
+            patch.object(app, "query_one", return_value=messages),
+            patch.object(app, "get_provider", return_value=MagicMock()),
+            patch.object(app, "run_worker") as worker,
+        ):
+            await _handle_stock(["AAPL", "quick"], app)
+        worker.assert_not_called()
+        messages.add_system_message.assert_called_once()

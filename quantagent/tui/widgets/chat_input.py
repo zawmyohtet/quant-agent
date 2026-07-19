@@ -172,23 +172,36 @@ class ChatInput(Vertical):
         ]
 
     def _arg_suggestions(self, body: str) -> list[Suggestion]:
-        """Complete the first argument of commands that provide values."""
+        """Complete command arguments: first-arg values and trailing mode words."""
         name, _, rest = body.partition(" ")
         cmd = find_command(name.lower())
-        if cmd is None or cmd.arg_completer is None or " " in rest:
+        if cmd is None:
             return []
-        partial = rest.lower()
-        values = cmd.arg_completer()
-        matches = [v for v in values if v.startswith(partial)] + [
-            v for v in values if partial in v and not v.startswith(partial)
-        ]
-        return [
-            Suggestion(
-                label=f"[b]{value}[/b]",
-                insert_text=f"/{cmd.name} {value} ",
-            )
-            for value in matches
-        ]
+        # First-argument value completion (e.g. /theme <name>, /workflow <name>).
+        if cmd.arg_completer is not None and " " not in rest:
+            partial = rest.lower()
+            values = cmd.arg_completer()
+            matches = [v for v in values if v.startswith(partial)] + [
+                v for v in values if partial in v and not v.startswith(partial)
+            ]
+            return [
+                Suggestion(label=f"[b]{value}[/b]", insert_text=f"/{cmd.name} {value} ")
+                for value in matches
+            ]
+        # Trailing mode-word completion (e.g. /stock AAPL quick), once at least
+        # one positional argument has been typed.
+        if cmd.modes and " " in rest:
+            partial = rest.rsplit(" ", 1)[-1].lower()
+            head = body[: len(body) - len(partial)]
+            matches = [m for m in cmd.modes if m.startswith(partial)]
+            return [
+                Suggestion(
+                    label=f"[b]{mode}[/b] [dim](mode)[/dim]",
+                    insert_text=f"/{head}{mode} ",
+                )
+                for mode in matches
+            ]
+        return []
 
     def _autocomplete(self) -> None:
         if not self._dropdown.display:

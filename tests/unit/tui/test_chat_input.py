@@ -135,6 +135,37 @@ class TestArgumentAutocomplete:
         assert widget._dropdown.display is False
 
 
+class TestModeAutocomplete:
+    """Completion of trailing mode words (quick/report) after a positional arg."""
+
+    @pytest.fixture
+    def widget(self) -> ChatInput:
+        w = ChatInput()
+        w._dropdown = FakeDropdown()  # type: ignore[assignment]
+        return w
+
+    def test_completes_mode_after_symbol(self, widget: ChatInput) -> None:
+        widget._update_dropdown("/stock AAPL q")
+        assert widget._dropdown.display is True
+        assert "/stock AAPL quick " in _insert_texts(widget)
+
+    def test_shows_all_modes_after_symbol_space(self, widget: ChatInput) -> None:
+        widget._update_dropdown("/stock AAPL ")
+        assert widget._dropdown.display is True
+        texts = _insert_texts(widget)
+        assert "/stock AAPL quick " in texts
+        assert "/stock AAPL report " in texts
+
+    def test_preserves_multiple_positionals(self, widget: ChatInput) -> None:
+        widget._update_dropdown("/stock AAPL MSFT quic")
+        assert "/stock AAPL MSFT quick " in _insert_texts(widget)
+
+    def test_no_mode_completion_for_first_arg(self, widget: ChatInput) -> None:
+        # First token is the symbol, not a mode; /stock has no arg_completer.
+        widget._update_dropdown("/stock AA")
+        assert widget._dropdown.display is False
+
+
 class TestChatInputAutocomplete:
     """Unit tests for ChatInput autocomplete application."""
 
