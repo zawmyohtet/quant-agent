@@ -22,6 +22,11 @@ class Suggestion:
 
     label: str
     insert_text: str
+    # Keep the dropdown open (recompute) after applying this suggestion — used
+    # when completing a command name that still has sub-commands/args/modes to
+    # offer. Terminal suggestions (modes, args with nothing further) leave this
+    # False so the menu closes.
+    reopen: bool = False
 
 
 class _CommandInput(Input):
@@ -131,19 +136,24 @@ class ChatInput(Vertical):
             self._apply_autocomplete(item.suggestion)
         self._dropdown.display = False
 
-    def set_text(self, text: str) -> None:
-        """Replace the input contents, focus it, and move cursor to the end."""
-        # Only arm suppression when the value actually changes; an unchanged
-        # value fires no Changed event and would leave the flag armed, swallowing
-        # the next real keystroke's dropdown.
-        self._suppress_dropdown = text != self._input.value
+    def set_text(self, text: str, *, reopen: bool = False) -> None:
+        """Replace the input contents, focus it, and move cursor to the end.
+
+        By default the resulting Changed event is suppressed so a programmatic
+        set does not re-open the dropdown. Pass reopen=True to let the dropdown
+        recompute on the new value (e.g. after completing a command name, to
+        reveal its sub-commands/args). Suppression is only armed when the value
+        actually changes; an unchanged value fires no Changed event and would
+        otherwise leave the flag armed, swallowing the next real keystroke.
+        """
+        self._suppress_dropdown = text != self._input.value and not reopen
         self._input.value = text
         self._input.focus()
         self._input.cursor_position = len(self._input.value)
 
     def _apply_autocomplete(self, suggestion: Suggestion) -> None:
         """Insert the completed text and move cursor to the end."""
-        self.set_text(suggestion.insert_text)
+        self.set_text(suggestion.insert_text, reopen=suggestion.reopen)
 
     def _update_dropdown(self, text: str) -> None:
         body = text[1:]
@@ -179,6 +189,7 @@ class ChatInput(Vertical):
             Suggestion(
                 label=f"[b]/{cmd.name}[/b] — {cmd.description} [dim]({cmd.category})[/dim]",
                 insert_text=f"/{cmd.name} ",
+                reopen=bool(cmd.arg_completer or cmd.modes),
             )
             for cmd in prefix_matches + substr_matches
         ]
@@ -197,7 +208,11 @@ class ChatInput(Vertical):
                 v for v in values if partial in v and not v.startswith(partial)
             ]
             return [
-                Suggestion(label=f"[b]{value}[/b]", insert_text=f"/{cmd.name} {value} ")
+                Suggestion(
+                    label=f"[b]{value}[/b]",
+                    insert_text=f"/{cmd.name} {value} ",
+                    reopen=bool(cmd.modes),
+                )
                 for value in matches
             ]
         # Trailing mode-word completion (e.g. /stock AAPL quick). The mode is the

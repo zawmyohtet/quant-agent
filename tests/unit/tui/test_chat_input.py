@@ -104,6 +104,22 @@ class TestChatInputDropdown:
         widget._update_dropdown("/m")
         assert widget._dropdown.index is None
 
+    def test_reopen_flag_set_for_commands_with_further_completions(
+        self, widget: ChatInput
+    ) -> None:
+        widget._update_dropdown("/")
+        reopen = {
+            item.suggestion.insert_text.strip().lstrip("/"): item.suggestion.reopen
+            for item in widget._dropdown.children
+        }
+        # Commands with an arg_completer or modes reopen to show the next level…
+        assert reopen["workflow"] is True
+        assert reopen["theme"] is True
+        assert reopen["market"] is True
+        # …commands with nothing further are terminal.
+        assert reopen["model"] is False
+        assert reopen["help"] is False
+
 
 class TestArgumentAutocomplete:
     """Unit tests for first-argument completion (e.g. /theme <name>)."""
@@ -230,6 +246,68 @@ class TestChatInputAutocomplete:
             # "/the" would normally surface the /theme command suggestion; the
             # programmatic set_text must not let the Changed event re-open it.
             widget.set_text("/the")
+            await pilot.pause()
+            assert widget._dropdown.display is False
+
+    async def test_selecting_command_reopens_dropdown_with_args(self) -> None:
+        from textual.app import App
+
+        class _App(App[None]):
+            def compose(self) -> Any:
+                yield ChatInput()
+
+        app = _App()
+        async with app.run_test() as pilot:
+            widget = app.query_one(ChatInput)
+            # Completing /workflow (which has an arg_completer) must reopen the
+            # dropdown to show workflow names, without a backspace-space dance.
+            widget._input.value = "/wo"
+            await pilot.pause()
+            widget._apply_autocomplete(
+                Suggestion(label="/workflow", insert_text="/workflow ", reopen=True)
+            )
+            await pilot.pause()
+            assert widget._dropdown.display is True
+
+    async def test_selecting_mode_command_reopens_with_modes(self) -> None:
+        from textual.app import App
+
+        class _App(App[None]):
+            def compose(self) -> Any:
+                yield ChatInput()
+
+        app = _App()
+        async with app.run_test() as pilot:
+            widget = app.query_one(ChatInput)
+            # /market takes no positional, so completing it should immediately
+            # reveal its mode list.
+            widget._input.value = "/mar"
+            await pilot.pause()
+            widget._apply_autocomplete(
+                Suggestion(label="/market", insert_text="/market ", reopen=True)
+            )
+            await pilot.pause()
+            assert widget._dropdown.display is True
+            texts = [item.suggestion.insert_text for item in widget._dropdown.children]
+            assert "/market quick " in texts
+
+    async def test_selecting_terminal_command_keeps_dropdown_closed(self) -> None:
+        from textual.app import App
+
+        class _App(App[None]):
+            def compose(self) -> Any:
+                yield ChatInput()
+
+        app = _App()
+        async with app.run_test() as pilot:
+            widget = app.query_one(ChatInput)
+            # /model has neither an arg_completer nor modes: completing it leaves
+            # nothing to offer, so the menu closes.
+            widget._input.value = "/mod"
+            await pilot.pause()
+            widget._apply_autocomplete(
+                Suggestion(label="/model", insert_text="/model ", reopen=False)
+            )
             await pilot.pause()
             assert widget._dropdown.display is False
 
