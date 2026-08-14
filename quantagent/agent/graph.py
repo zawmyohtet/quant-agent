@@ -64,17 +64,27 @@ def _parse_model_string(model: str) -> tuple[str, str | None]:
 
 
 def _create_chat_model(config: QuantAgentConfig) -> Any:
-    """Create a chat model from a ``provider:model`` string."""
-    model_name, model_provider = _parse_model_string(config.model)
-    if model_provider != "zai":
-        return init_chat_model(model_name, model_provider=model_provider)
+    """Create a chat model from a ``provider:model`` string.
 
-    return init_chat_model(
-        model=model_name,
-        model_provider="openai",
-        api_key=config.zai_api_key,
-        base_url=config.zai_api_base,
-    )
+    ``zai`` and ``opencode`` are OpenAI-compatible gateways reached through
+    langchain-openai with a custom base_url — not native langchain providers.
+    """
+    model_name, model_provider = _parse_model_string(config.model)
+
+    openai_compatible_gateways = {
+        "zai": (config.zai_api_key, config.zai_api_base),
+        "opencode": (config.opencode_api_key, config.opencode_api_base),
+    }
+    if model_provider in openai_compatible_gateways:
+        api_key, base_url = openai_compatible_gateways[model_provider]
+        return init_chat_model(
+            model=model_name,
+            model_provider="openai",
+            api_key=api_key,
+            base_url=base_url,
+        )
+
+    return init_chat_model(model_name, model_provider=model_provider)
 
 
 def create_quant_agent(

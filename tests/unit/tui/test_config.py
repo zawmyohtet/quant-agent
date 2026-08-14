@@ -17,6 +17,8 @@ class TestQuantAgentConfig:
         assert "delete_universe_tool" in cfg.approval_required
         assert cfg.zai_api_key is None
         assert cfg.zai_api_base == "https://api.z.ai/api/paas/v4/"
+        assert cfg.opencode_api_key is None
+        assert cfg.opencode_api_base == "https://opencode.ai/zen/go/v1/"
 
     def test_load_save_roundtrip(self, tmp_path: Path) -> None:
         cfg = QuantAgentConfig(model="openai:gpt-4o", provider="polygon")
@@ -87,5 +89,35 @@ class TestQuantAgentConfig:
             content = path.read_text()
             assert "zai_api_key" not in content
             assert "secret-zai-key" not in content
+        finally:
+            config_mod._DEFAULT_CONFIG_PATH = original_path
+
+    def test_load_applies_opencode_env_values(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import quantagent.tui.config as config_mod
+
+        monkeypatch.setattr(config_mod, "_DEFAULT_CONFIG_PATH", tmp_path / "config.toml")
+        monkeypatch.setenv("OPENCODE_API_KEY", "opencode-test-key")
+        monkeypatch.setenv("OPENCODE_API_BASE", "https://example.test/v1/")
+
+        loaded = QuantAgentConfig.load()
+
+        assert loaded.opencode_api_key == "opencode-test-key"
+        assert loaded.opencode_api_base == "https://example.test/v1/"
+
+    def test_save_excludes_opencode_api_key(self, tmp_path: Path) -> None:
+        cfg = QuantAgentConfig(opencode_api_key="secret-opencode-key")
+        path = tmp_path / "config.toml"
+
+        import quantagent.tui.config as config_mod
+
+        original_path = config_mod._DEFAULT_CONFIG_PATH
+        config_mod._DEFAULT_CONFIG_PATH = path
+        try:
+            cfg.save()
+            content = path.read_text()
+            assert "opencode_api_key" not in content
+            assert "secret-opencode-key" not in content
         finally:
             config_mod._DEFAULT_CONFIG_PATH = original_path

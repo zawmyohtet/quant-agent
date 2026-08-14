@@ -29,6 +29,29 @@ def test_create_chat_model_zai_uses_openai_compatible_base_url() -> None:
     )
 
 
+def test_parse_model_string_opencode() -> None:
+    model_name, provider = _parse_model_string("opencode:kimi-k3")
+    assert model_name == "kimi-k3"
+    assert provider == "opencode"
+
+
+def test_create_chat_model_opencode_uses_openai_compatible_base_url() -> None:
+    with patch(
+        "quantagent.agent.graph.init_chat_model",
+        return_value=object(),
+    ) as mock_init:
+        _create_chat_model(
+            QuantAgentConfig(model="opencode:kimi-k3", opencode_api_key="test-opencode-key")
+        )
+
+    mock_init.assert_called_once_with(
+        model="kimi-k3",
+        model_provider="openai",
+        api_key="test-opencode-key",
+        base_url="https://opencode.ai/zen/go/v1/",
+    )
+
+
 def test_create_chat_model_non_zai_passthrough() -> None:
     with patch(
         "quantagent.agent.graph.init_chat_model",

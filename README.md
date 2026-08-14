@@ -69,6 +69,7 @@ uv sync
 echo "OPENAI_API_KEY=sk-..." >> ~/.quantagent/.env
 echo "ANTHROPIC_API_KEY=sk-ant-..." >> ~/.quantagent/.env
 echo "ZAI_API_KEY=..." >> ~/.quantagent/.env
+echo "OPENCODE_API_KEY=..." >> ~/.quantagent/.env
 ```
 
 ### Run
@@ -83,6 +84,12 @@ uv run quantagent --model openai:gpt-4o --provider yfinance
 
 `zai:` models use Z.AI's OpenAI-compatible API. By default QuantAgent targets
 `https://api.z.ai/api/paas/v4/`. Override that with `ZAI_API_BASE` if needed.
+
+`opencode:` models use OpenCode Go's OpenAI-compatible API (a subscription
+giving access to curated open-source coding models — DeepSeek, Kimi, GLM,
+Qwen, Grok, MiniMax, etc. — via an API key from the OpenCode Zen dashboard).
+By default QuantAgent targets `https://opencode.ai/zen/go/v1/`. Override that
+with `OPENCODE_API_BASE` if needed.
 
 ### First Commands
 

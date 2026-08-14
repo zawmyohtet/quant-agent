@@ -1,18 +1,19 @@
 from __future__ import annotations
 
 import logging
-import os
 from pathlib import Path
 
 import toml
 from pydantic import BaseModel, Field
 from pydantic.config import ConfigDict
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
 logger = logging.getLogger(__name__)
 
 _DEFAULT_CONFIG_DIR = Path.home() / ".quantagent"
 _DEFAULT_CONFIG_PATH = _DEFAULT_CONFIG_DIR / "config.toml"
 _DEFAULT_ZAI_BASE_URL = "https://api.z.ai/api/paas/v4/"
+_DEFAULT_OPENCODE_BASE_URL = "https://opencode.ai/zen/go/v1/"
 
 # Older configs stored tool names that predate the *_tool suffix used by
 # the registry; approval matching is by exact name, so migrate silently.
@@ -27,6 +28,22 @@ _LEGACY_THEME_NAMES = {
     "dark": "textual-dark",
     "light": "textual-light",
 }
+
+
+class _GatewaySecrets(BaseSettings):
+    """Env-sourced secrets/base-URLs for OpenAI-compatible gateway providers.
+
+    Field names map to env vars case-insensitively (e.g. ``zai_api_key`` ->
+    ``ZAI_API_KEY``). ``env_file=None`` because ``.env`` loading is already
+    handled by ``load_dotenv_file()`` — this class only reads ``os.environ``.
+    """
+
+    model_config = SettingsConfigDict(env_file=None, extra="ignore")
+
+    zai_api_key: str | None = None
+    zai_api_base: str = _DEFAULT_ZAI_BASE_URL
+    opencode_api_key: str | None = None
+    opencode_api_base: str = _DEFAULT_OPENCODE_BASE_URL
 
 
 class QuantAgentConfig(BaseModel):
@@ -47,6 +64,8 @@ class QuantAgentConfig(BaseModel):
     thread_id: str | None = Field(default=None)
     zai_api_key: str | None = Field(default=None, exclude=True)
     zai_api_base: str = Field(default=_DEFAULT_ZAI_BASE_URL)
+    opencode_api_key: str | None = Field(default=None, exclude=True)
+    opencode_api_base: str = Field(default=_DEFAULT_OPENCODE_BASE_URL)
 
     # Skills
     extra_skill_dirs: list[str] = Field(default_factory=list)
@@ -70,10 +89,13 @@ class QuantAgentConfig(BaseModel):
 
     def _with_env_overrides(self) -> QuantAgentConfig:
         """Return config with env overrides and legacy tool names migrated."""
+        secrets = _GatewaySecrets()
         return self.model_copy(
             update={
-                "zai_api_key": self.zai_api_key or os.environ.get("ZAI_API_KEY"),
-                "zai_api_base": os.environ.get("ZAI_API_BASE", self.zai_api_base),
+                "zai_api_key": self.zai_api_key or secrets.zai_api_key,
+                "zai_api_base": secrets.zai_api_base,
+                "opencode_api_key": self.opencode_api_key or secrets.opencode_api_key,
+                "opencode_api_base": secrets.opencode_api_base,
                 "approval_required": [
                     _LEGACY_APPROVAL_NAMES.get(name, name) for name in self.approval_required
                 ],
