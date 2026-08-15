@@ -410,39 +410,76 @@ def wilder_rsi(close: pd.Series, length: int = 14) -> float | None:
 # Signal generation
 # ---------------------------------------------------------------------------
 
-def _signal_sma_crossover(result: pd.DataFrame) -> pd.DataFrame:
-    fast = result.ta.sma(length=50, append=False)
-    slow = result.ta.sma(length=200, append=False)
+def _macd_signal_column(macd_df: pd.DataFrame) -> pd.Series:
+    """Return the MACD signal-line (MACDs) column from a pandas-ta MACD frame.
+
+    Looks up the column by name (prefix ``MACDs_``) rather than a fixed
+    positional index, so this is correct regardless of the fast/slow/signal
+    periods baked into the column name suffix. Falls back to pandas-ta's
+    documented column order (``[MACD, MACDh, MACDs]``, index 2) if no
+    matching name is found.
+    """
+    for col in macd_df.columns:
+        if str(col).startswith("MACDs_"):
+            return macd_df[col]
+    return macd_df.iloc[:, 2]
+
+
+def _signal_sma_crossover(
+    result: pd.DataFrame, params: dict[str, float] | None = None
+) -> pd.DataFrame:
+    p = params or {}
+    fast = result.ta.sma(length=int(p.get("fast", 50)), append=False)
+    slow = result.ta.sma(length=int(p.get("slow", 200)), append=False)
     result["Signal"] = np.where(fast > slow, 1, np.where(fast < slow, -1, 0))
     return result
 
 
-def _signal_ema_crossover(result: pd.DataFrame) -> pd.DataFrame:
-    fast = result.ta.ema(length=12, append=False)
-    slow = result.ta.ema(length=26, append=False)
+def _signal_ema_crossover(
+    result: pd.DataFrame, params: dict[str, float] | None = None
+) -> pd.DataFrame:
+    p = params or {}
+    fast = result.ta.ema(length=int(p.get("fast", 12)), append=False)
+    slow = result.ta.ema(length=int(p.get("slow", 26)), append=False)
     result["Signal"] = np.where(fast > slow, 1, np.where(fast < slow, -1, 0))
     return result
 
 
-def _signal_rsi_mean_reversion(result: pd.DataFrame) -> pd.DataFrame:
-    rsi = result.ta.rsi(length=14, append=False)
-    result["Signal"] = np.where(rsi < 30, 1, np.where(rsi > 70, -1, 0))
+def _signal_rsi_mean_reversion(
+    result: pd.DataFrame, params: dict[str, float] | None = None
+) -> pd.DataFrame:
+    p = params or {}
+    length = int(p.get("length", 14))
+    oversold = p.get("oversold", 30)
+    overbought = p.get("overbought", 70)
+    rsi = result.ta.rsi(length=length, append=False)
+    result["Signal"] = np.where(rsi < oversold, 1, np.where(rsi > overbought, -1, 0))
     return result
 
 
-def _signal_macd_momentum(result: pd.DataFrame) -> pd.DataFrame:
-    macd_df = result.ta.macd(append=False)
+def _signal_macd_momentum(
+    result: pd.DataFrame, params: dict[str, float] | None = None
+) -> pd.DataFrame:
+    p = params or {}
+    fast_len = int(p.get("fast", 12))
+    slow_len = int(p.get("slow", 26))
+    signal_len = int(p.get("signal", 9))
+    macd_df = result.ta.macd(fast=fast_len, slow=slow_len, signal=signal_len, append=False)
     if macd_df is not None and not macd_df.empty:
         macd_line = macd_df.iloc[:, 0]
-        signal_line = macd_df.iloc[:, 1]
+        signal_line = _macd_signal_column(macd_df)
         result["Signal"] = np.where(
             macd_line > signal_line, 1, np.where(macd_line < signal_line, -1, 0)
         )
     return result
 
 
-def _signal_bollinger_breakout(result: pd.DataFrame) -> pd.DataFrame:
-    bb = result.ta.bbands(length=20, append=False)
+def _signal_bollinger_breakout(
+    result: pd.DataFrame, params: dict[str, float] | None = None
+) -> pd.DataFrame:
+    p = params or {}
+    length = int(p.get("length", 20))
+    bb = result.ta.bbands(length=length, append=False)
     if bb is not None and not bb.empty:
         upper = bb.iloc[:, 2]
         lower = bb.iloc[:, 0]
@@ -452,13 +489,17 @@ def _signal_bollinger_breakout(result: pd.DataFrame) -> pd.DataFrame:
     return result
 
 
-def _signal_buy_and_hold(result: pd.DataFrame) -> pd.DataFrame:
+def _signal_buy_and_hold(
+    result: pd.DataFrame, _params: dict[str, float] | None = None
+) -> pd.DataFrame:
     if not result.empty:
         result.loc[result.index[0], "Signal"] = 1
     return result
 
 
-_STRATEGY_DISPATCH: dict[str, Callable[[pd.DataFrame], pd.DataFrame]] = {
+_STRATEGY_DISPATCH: dict[
+    str, Callable[[pd.DataFrame, dict[str, float] | None], pd.DataFrame]
+] = {
     "sma_crossover": _signal_sma_crossover,
     "ema_crossover": _signal_ema_crossover,
     "rsi_mean_reversion": _signal_rsi_mean_reversion,
@@ -468,11 +509,22 @@ _STRATEGY_DISPATCH: dict[str, Callable[[pd.DataFrame], pd.DataFrame]] = {
 }
 
 
-def generate_signals(df: pd.DataFrame, strategy: str) -> pd.DataFrame:
+def generate_signals(
+    df: pd.DataFrame, strategy: str, params: dict[str, float] | None = None
+) -> pd.DataFrame:
     """Generate trading signals from a strategy.
 
     Strategies: sma_crossover, ema_crossover, rsi_mean_reversion,
     macd_momentum, bollinger_breakout, buy_and_hold.
+
+    Args:
+        df: OHLCV DataFrame.
+        strategy: Strategy name (see `_STRATEGY_DISPATCH`).
+        params: Optional tunable-parameter overrides for the selected
+            strategy's handler (e.g. `{"fast": 10, "slow": 50}`). Each
+            handler reads only the keys it recognizes; unrecognized keys
+            are ignored. Omitting this argument reproduces each strategy's
+            original hardcoded defaults exactly.
 
     Returns:
         DataFrame with Signal column (1=buy, -1=sell, 0=hold).
@@ -485,7 +537,7 @@ def generate_signals(df: pd.DataFrame, strategy: str) -> pd.DataFrame:
         logger.warning("Unknown strategy: %s", strategy)
         return result
 
-    return handler(result)
+    return handler(result, params)
 
 
 # ---------------------------------------------------------------------------
@@ -524,11 +576,9 @@ def _summarize_momentum(
 ) -> dict:
     macd_signal = None
     if macd_df is not None:
-        macd_signal = (
-            "bullish"
-            if macd_df.iloc[-1, 0] > macd_df.iloc[-1, 1]  # type: ignore[operator, call-overload]
-            else "bearish"
-        )
+        macd_line = macd_df.iloc[:, 0]
+        true_signal = _macd_signal_column(macd_df)
+        macd_signal = "bullish" if macd_line.iloc[-1] > true_signal.iloc[-1] else "bearish"
     return {
         "rsi_14": round(rsi.iloc[-1], 2) if rsi is not None else None,
         "macd_signal": macd_signal,

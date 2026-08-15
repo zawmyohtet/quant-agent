@@ -130,6 +130,31 @@ def _parse_comma_weights(weights: str) -> list[float]:
     return [float(x) for x in weights.split(",")]
 
 
+def _parse_symbols_and_weights(symbols: str, weights: str) -> dict[str, float]:
+    """Parse comma-separated symbols/weights and zip them into a dict.
+
+    Args:
+        symbols: Comma-separated list of stock symbols.
+        weights: Comma-separated list of weights, one per symbol.
+
+    Returns:
+        Mapping of symbol to weight, in input order.
+
+    Raises:
+        ValueError: If the parsed symbol and weight lists have different
+            lengths (rather than silently truncating to the shorter list).
+    """
+    sym_list = _parse_comma_symbols(symbols)
+    w_list = _parse_comma_weights(weights)
+    if len(sym_list) != len(w_list):
+        raise ValueError(
+            "symbols and weights must have the same number of comma-separated "
+            f"entries: got {len(sym_list)} symbol(s) {sym_list} and "
+            f"{len(w_list)} weight(s) {w_list}."
+        )
+    return dict(zip(sym_list, w_list, strict=True))
+
+
 def _json_dumps(obj: Any) -> str:
     """Serialize to JSON with standard indent and str fallback."""
     return json.dumps(obj, indent=2, default=str)
@@ -484,9 +509,7 @@ async def _compute_portfolio_risk(provider: Any, symbols: str, weights: str) -> 
         symbols: Comma-separated list of stock symbols.
         weights: Comma-separated list of weights (must sum to ~1.0).
     """
-    sym_list = _parse_comma_symbols(symbols)
-    w_list = _parse_comma_weights(weights)
-    weight_dict = dict(zip(sym_list, w_list, strict=False))
+    weight_dict = _parse_symbols_and_weights(symbols, weights)
     result = await _with_timeout(compute_portfolio_metrics(provider, weight_dict))
     return _json_dumps(result)
 
@@ -498,9 +521,7 @@ async def _run_monte_carlo(provider: Any, symbols: str, weights: str) -> str:
         symbols: Comma-separated list of stock symbols.
         weights: Comma-separated list of weights.
     """
-    sym_list = _parse_comma_symbols(symbols)
-    w_list = _parse_comma_weights(weights)
-    weight_dict = dict(zip(sym_list, w_list, strict=False))
+    weight_dict = _parse_symbols_and_weights(symbols, weights)
     result = await _with_timeout(monte_carlo_simulation(provider, weight_dict))
     return _json_dumps(result)
 

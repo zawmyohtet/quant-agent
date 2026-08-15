@@ -53,6 +53,7 @@ class BacktestResult(BaseModel):
     equity_curve: pd.Series
     monthly_returns: pd.Series
     trade_log: pd.DataFrame
+    best_params: dict[str, float] | None = None
 
 
 async def run_backtest(
@@ -87,7 +88,11 @@ async def run_backtest(
     return _portfolio_to_result(pf, config)
 
 
-def _portfolio_to_result(pf: vbt.Portfolio, config: BacktestConfig) -> BacktestResult:
+def _portfolio_to_result(
+    pf: vbt.Portfolio,
+    config: BacktestConfig,
+    best_params: dict[str, float] | None = None,
+) -> BacktestResult:
     """Convert a vectorbt Portfolio to BacktestResult."""
     total_return = float(pf.total_return())
     n_years = len(pf.returns()) / 252
@@ -121,7 +126,48 @@ def _portfolio_to_result(pf: vbt.Portfolio, config: BacktestConfig) -> BacktestR
         equity_curve=pf.value(),
         monthly_returns=monthly,
         trade_log=trade_log,
+        best_params=best_params,
     )
+
+
+def _walkforward_fold(
+    split_df: pd.DataFrame,
+    config: BacktestConfig,
+    train_ratio: float,
+    param_grid: dict | None,
+    metric: str,
+) -> BacktestResult:
+    """Run one walk-forward fold, optionally grid-searching its train slice.
+
+    When `param_grid` is given, the leading `train_ratio` fraction of
+    `split_df` is grid-searched (see `_grid_search`) and the winning
+    parameters both generate the held-out test slice's signals and are
+    attached to the returned result's `best_params`. When `param_grid` is
+    None, the test slice runs `config.strategy` with its hardcoded
+    defaults and `best_params` stays None.
+    """
+    train_end = int(len(split_df) * train_ratio)
+    test_df = split_df.iloc[train_end:]
+
+    best_params: dict[str, float] | None = None
+    if param_grid is not None:
+        train_df = split_df.iloc[:train_end]
+        best_params = _grid_search(train_df, config, param_grid, metric)["best_params"]
+
+    test_signals = generate_signals(test_df, config.strategy, best_params)
+    entries = test_signals["Signal"] == 1
+    exits = test_signals["Signal"] == -1
+
+    pf = vbt.Portfolio.from_signals(
+        test_signals["Close"],
+        entries,
+        exits,
+        freq="1d",
+        init_cash=config.initial_capital,
+        fees=config.commission,
+    )
+
+    return _portfolio_to_result(pf, config, best_params)
 
 
 async def run_walkforward(
@@ -129,8 +175,29 @@ async def run_walkforward(
     config: BacktestConfig,
     n_splits: int = 5,
     train_ratio: float = 0.7,
+    param_grid: dict | None = None,
+    metric: str = "sharpe_ratio",
 ) -> list[BacktestResult]:
-    """Run walk-forward analysis with train/test splits."""
+    """Run walk-forward analysis with train/test splits.
+
+    Args:
+        provider: Data provider to fetch OHLCV bars from.
+        config: Backtest configuration (symbol, strategy, capital, fees).
+        n_splits: Number of sequential folds to split history into.
+        train_ratio: Fraction of each fold reserved as the "train" window.
+        param_grid: Optional dict of parameter name to candidate value
+            lists (see `optimize_parameters`). When provided, each fold's
+            train slice is grid-searched and the winning params both
+            generate that fold's test-slice signals and are attached to
+            the fold's `BacktestResult.best_params`. When None (default),
+            every fold runs `config.strategy` with its hardcoded defaults
+            and `best_params` stays None.
+        metric: Metric to maximize during per-fold optimization; ignored
+            when `param_grid` is None.
+
+    Returns:
+        List of BacktestResult, one per fold, in chronological order.
+    """
     df = await provider.get_ohlcv(config.symbol, period=config.period)
     if len(df) < n_splits * 100:
         raise ValueError(f"Insufficient data for walk-forward: {len(df)} bars")
@@ -142,27 +209,7 @@ async def run_walkforward(
         start_idx = i * split_size
         end_idx = start_idx + split_size
         split_df = df.iloc[start_idx:end_idx]
-
-        train_end = int(len(split_df) * train_ratio)
-        split_df.iloc[:train_end]
-        test_df = split_df.iloc[train_end:]
-
-        # In a real implementation, parameters would be optimized on train_df
-        # and evaluated on test_df. For simplicity, we run the same strategy.
-        test_signals = generate_signals(test_df, config.strategy)
-        entries = test_signals["Signal"] == 1
-        exits = test_signals["Signal"] == -1
-
-        pf = vbt.Portfolio.from_signals(
-            test_signals["Close"],
-            entries,
-            exits,
-            freq="1d",
-            init_cash=config.initial_capital,
-            fees=config.commission,
-        )
-
-        results.append(_portfolio_to_result(pf, config))
+        results.append(_walkforward_fold(split_df, config, train_ratio, param_grid, metric))
 
     return results
 
@@ -172,7 +219,7 @@ def _evaluate_combo(
 ) -> tuple[dict, float] | None:
     """Run a backtest for a single parameter combo and return (result, metric_value) or None."""
     try:
-        signals_df = generate_signals(df, config.strategy)
+        signals_df = generate_signals(df, config.strategy, params)
         entries = signals_df["Signal"] == 1
         exits = signals_df["Signal"] == -1
 
@@ -190,6 +237,43 @@ def _evaluate_combo(
     except Exception as exc:
         logger.warning("Optimization failed for params %s: %s", params, exc)
         return None
+
+
+def _grid_search(df: pd.DataFrame, config: BacktestConfig, param_grid: dict, metric: str) -> dict:
+    """Run an exhaustive grid search over param_grid against an in-memory df.
+
+    Args:
+        df: OHLCV DataFrame to backtest each combo against (no data
+            fetching happens here — callers pass an in-memory slice).
+        config: Backtest configuration (strategy, capital, fees, ...).
+        param_grid: Dict of parameter name to list of candidate values.
+        metric: vectorbt Portfolio metric method name to maximize.
+
+    Returns:
+        Dict with best_params, f"best_{metric}", and all_results.
+    """
+    keys = list(param_grid.keys())
+    values = list(param_grid.values())
+    all_results = []
+    best_value = -np.inf
+    best_params: dict = {}
+
+    for combo in product(*values):
+        params = dict(zip(keys, combo, strict=False))
+        result = _evaluate_combo(df, config, metric, params)
+        if result is None:
+            continue
+        result_entry, metric_value = result
+        all_results.append(result_entry)
+        if metric_value > best_value:
+            best_value = metric_value
+            best_params = params
+
+    return {
+        "best_params": best_params,
+        f"best_{metric}": round(best_value, 4),
+        "all_results": all_results,
+    }
 
 
 async def optimize_parameters(
@@ -212,28 +296,7 @@ async def optimize_parameters(
     if len(df) < 50:
         raise ValueError(f"Insufficient data for optimization: {len(df)} bars")
 
-    keys = list(param_grid.keys())
-    values = list(param_grid.values())
-    all_results = []
-    best_value = -np.inf
-    best_params = {}
-
-    for combo in product(*values):
-        params = dict(zip(keys, combo, strict=False))
-        result = _evaluate_combo(df, config, metric, params)
-        if result is None:
-            continue
-        result_entry, metric_value = result
-        all_results.append(result_entry)
-        if metric_value > best_value:
-            best_value = metric_value
-            best_params = params
-
-    return {
-        "best_params": best_params,
-        f"best_{metric}": round(best_value, 4),
-        "all_results": all_results,
-    }
+    return _grid_search(df, config, param_grid, metric)
 
 
 def format_backtest_result(result: BacktestResult) -> str:
@@ -256,4 +319,6 @@ def format_backtest_result(result: BacktestResult) -> str:
         f"| Total Return | {result.total_return:.2%} |",
         f"| Annualized Volatility | {result.annualized_volatility:.2%} |",
     ]
+    if result.best_params is not None:
+        lines.append(f"| Best Params | {result.best_params} |")
     return "\n".join(lines)

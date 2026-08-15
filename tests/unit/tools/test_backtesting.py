@@ -9,6 +9,7 @@ from quantagent.tools.backtesting import (
     BacktestConfig,
     BacktestResult,
     _evaluate_combo,
+    _grid_search,
     format_backtest_result,
     optimize_parameters,
     run_backtest,
@@ -209,3 +210,58 @@ def test_evaluate_combo_failure() -> None:
     config = BacktestConfig(symbol="TEST", strategy="buy_and_hold", period="1mo")
     result = _evaluate_combo(df, config, "nonexistent_metric", {"param": 1})
     assert result is None
+
+
+def test_evaluate_combo_params_affect_result() -> None:
+    """Regression: _evaluate_combo must feed params into generate_signals —
+    previously params were built but discarded, so every combo was identical."""
+    df = _synthetic_ohlcv(500)
+    config = BacktestConfig(symbol="TEST", strategy="sma_crossover", period="2y")
+    result_fast = _evaluate_combo(df, config, "total_return", {"fast": 5, "slow": 10})
+    result_slow = _evaluate_combo(df, config, "total_return", {"fast": 50, "slow": 200})
+    assert result_fast is not None
+    assert result_slow is not None
+    _, value_fast = result_fast
+    _, value_slow = result_slow
+    assert value_fast != value_slow
+
+
+def test_grid_search_matches_optimize_parameters_shape() -> None:
+    """_grid_search (extracted from optimize_parameters) must return the same
+    shape directly on an in-memory DataFrame."""
+    df = _synthetic_ohlcv(500)
+    config = BacktestConfig(symbol="TEST", strategy="buy_and_hold", period="2y")
+    result = _grid_search(df, config, {"fast": [10, 20]}, "sharpe_ratio")
+    assert "best_params" in result
+    assert "best_sharpe_ratio" in result
+    assert "all_results" in result
+
+
+async def test_run_walkforward_with_param_grid_sets_best_params() -> None:
+    """Regression: when param_grid is supplied, each fold's train slice must
+    actually be grid-searched, and the winning params attached to that
+    fold's BacktestResult.best_params (previously the train slice was
+    computed and discarded — this was dead code)."""
+    df = _synthetic_ohlcv(600)
+    provider = MockProvider(df)
+    config = BacktestConfig(symbol="TEST", strategy="sma_crossover", period="2y")
+    param_grid = {"fast": [5, 10], "slow": [20, 50]}
+    results = await run_walkforward(
+        provider, config, n_splits=3, train_ratio=0.7, param_grid=param_grid, metric="total_return"
+    )
+    assert len(results) == 3
+    for r in results:
+        assert r.best_params is not None
+        assert set(r.best_params.keys()) == {"fast", "slow"}
+        assert r.best_params["fast"] in param_grid["fast"]
+        assert r.best_params["slow"] in param_grid["slow"]
+
+
+async def test_run_walkforward_without_param_grid_leaves_best_params_none() -> None:
+    """When param_grid is omitted, behavior (and best_params=None) must be
+    unchanged from before this fix."""
+    df = _synthetic_ohlcv(600)
+    provider = MockProvider(df)
+    config = BacktestConfig(symbol="TEST", strategy="buy_and_hold", period="2y")
+    results = await run_walkforward(provider, config, n_splits=3, train_ratio=0.7)
+    assert all(r.best_params is None for r in results)

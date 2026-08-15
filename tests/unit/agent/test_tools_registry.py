@@ -7,6 +7,9 @@ import pytest
 
 from quantagent.agent.tools_registry import (
     _bind_provider,
+    _compute_portfolio_risk,
+    _parse_symbols_and_weights,
+    _run_monte_carlo,
     _with_timeout,
     build_tool_registry,
 )
@@ -118,3 +121,25 @@ async def test_journal_history_empty() -> None:
     from quantagent.agent.tools_registry import journal_history
     result = await journal_history.ainvoke({"days": 1})
     assert "No journaled trades" in result
+
+
+def test_parse_symbols_and_weights_success() -> None:
+    result = _parse_symbols_and_weights("AAPL, MSFT", "0.6,0.4")
+    assert result == {"AAPL": 0.6, "MSFT": 0.4}
+
+
+def test_parse_symbols_and_weights_mismatch_raises() -> None:
+    with pytest.raises(ValueError, match="same number of comma-separated entries"):
+        _parse_symbols_and_weights("AAPL,MSFT,GOOG", "0.5,0.5")
+
+
+@pytest.mark.asyncio
+async def test_compute_portfolio_risk_mismatch_raises() -> None:
+    with pytest.raises(ValueError, match="same number of comma-separated entries"):
+        await _compute_portfolio_risk(None, "AAPL,MSFT,GOOG", "0.5,0.5")
+
+
+@pytest.mark.asyncio
+async def test_run_monte_carlo_mismatch_raises() -> None:
+    with pytest.raises(ValueError, match="same number of comma-separated entries"):
+        await _run_monte_carlo(None, "AAPL,MSFT", "1.0")

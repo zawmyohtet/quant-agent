@@ -272,3 +272,47 @@ def test_generate_signals_bollinger_breakout() -> None:
     df = _synthetic_ohlcv(n=250)
     signals = generate_signals(df, "bollinger_breakout")
     assert "Signal" in signals.columns
+
+
+def test_summarize_momentum_uses_signal_not_histogram() -> None:
+    """Regression: macd_signal must compare the MACD line to the signal line
+    (MACDs), not the histogram (MACDh). Before the fix, MACD (1.0) >
+    MACDh (-0.5) classified this as bullish; the correct comparison is
+    MACD (1.0) < MACDs (1.5), which is bearish."""
+    macd_df = pd.DataFrame(
+        {
+            "MACD_12_26_9": [1.0, 1.0],
+            "MACDh_12_26_9": [-0.5, -0.5],
+            "MACDs_12_26_9": [1.5, 1.5],
+        }
+    )
+    result = _summarize_momentum(None, macd_df)
+    assert result["macd_signal"] == "bearish"
+
+
+def test_signal_macd_momentum_matches_true_signal_line() -> None:
+    """Regression: generate_signals('macd_momentum') must compare against
+    the MACDs (signal) column, not MACDh (histogram)."""
+    df = _synthetic_ohlcv(n=250)
+    signals = generate_signals(df, "macd_momentum")
+    macd_df = df.ta.macd(append=False)
+    macd_line = macd_df.iloc[:, 0]
+    true_signal = macd_df["MACDs_12_26_9"]
+    expected = np.where(macd_line > true_signal, 1, np.where(macd_line < true_signal, -1, 0))
+    np.testing.assert_array_equal(signals["Signal"].to_numpy(), expected)
+
+
+def test_generate_signals_sma_crossover_params_override_defaults() -> None:
+    """Regression: generate_signals must honor an explicit params dict rather
+    than always using the hardcoded fast=50/slow=200 defaults."""
+    df = _synthetic_ohlcv(n=250)
+    default_signals = generate_signals(df, "sma_crossover")
+    custom_signals = generate_signals(df, "sma_crossover", {"fast": 5, "slow": 10})
+    assert not custom_signals["Signal"].equals(default_signals["Signal"])
+
+
+def test_generate_signals_buy_and_hold_ignores_unknown_params() -> None:
+    """buy_and_hold has no tunables; unrecognized params must not raise."""
+    df = _synthetic_ohlcv(n=50)
+    signals = generate_signals(df, "buy_and_hold", {"param": 1})
+    assert signals["Signal"].iloc[0] == 1
