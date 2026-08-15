@@ -24,7 +24,7 @@ class _ChatInputWithTextApp(SnapshotApp):
 
     async def on_mount(self) -> None:
         chat_input = self.query_one("#chat-input", ChatInput)
-        chat_input._input.value = "analysis AAPL"
+        chat_input._input.text = "analysis AAPL"
 
 
 class _ChatInputAutocompleteApp(SnapshotApp):
@@ -35,7 +35,7 @@ class _ChatInputAutocompleteApp(SnapshotApp):
 
     async def on_mount(self) -> None:
         chat_input = self.query_one("#chat-input", ChatInput)
-        chat_input._input.value = "/ana"
+        chat_input._input.text = "/ana"
 
 
 class TestChatInputSnapshots:

@@ -9,7 +9,7 @@ from textual.containers import Horizontal, Vertical
 from textual.events import Key
 from textual.message import Message
 from textual.reactive import reactive
-from textual.widgets import Input, ListItem, ListView, Static
+from textual.widgets import ListItem, ListView, Static, TextArea
 
 from quantagent.tui.commands import REGISTRY, find_command
 
@@ -29,8 +29,9 @@ class Suggestion:
     reopen: bool = False
 
 
-class _CommandInput(Input):
-    """Input that lets the owning ChatInput consume dropdown-navigation keys."""
+class _CommandTextArea(TextArea):
+    """Text area that lets the owning ChatInput consume dropdown-navigation
+    keys and submit on Enter instead of inserting a newline."""
 
     def __init__(self, chat: ChatInput, **kwargs: Any) -> None:
         super().__init__(**kwargs)
@@ -40,10 +41,20 @@ class _CommandInput(Input):
         if self._chat.handle_dropdown_key(event.key):
             event.stop()
             event.prevent_default()
+        elif event.key == "enter":
+            # Dropdown is closed (or nothing highlighted): submit the message
+            # rather than let TextArea insert a literal newline.
+            self._chat._submit()
+            event.stop()
+            event.prevent_default()
 
 
 class ChatInput(Vertical):
-    """Multi-line input bar with slash command autocomplete."""
+    """Input bar with slash command autocomplete.
+
+    Wraps long text within the box (growing up to a max height) instead of
+    scrolling it off-screen horizontally.
+    """
 
     class Submitted(Message):
         """Message emitted when the user submits input."""
@@ -56,11 +67,13 @@ class ChatInput(Vertical):
 
     def __init__(self, **kwargs: Any) -> None:
         super().__init__(**kwargs)
-        self._input = _CommandInput(
+        self._input = _CommandTextArea(
             self,
             placeholder="Type a message or /help",
             id="chat-input-field",
-            select_on_focus=False,
+            soft_wrap=True,
+            show_line_numbers=False,
+            tab_behavior="focus",
         )
         self._dropdown = ListView(id="chat-input-dropdown")
         self._dropdown.display = False
@@ -79,22 +92,23 @@ class ChatInput(Vertical):
     def on_mount(self) -> None:
         self._input.focus()
 
-    def on_input_changed(self, event: Input.Changed) -> None:
-        self.value = event.value
+    def on_text_area_changed(self, event: TextArea.Changed) -> None:
+        text = event.text_area.text
+        self.value = text
         if self._suppress_dropdown:
             self._suppress_dropdown = False
             self._dropdown.display = False
             return
-        if event.value.startswith("/"):
-            self._update_dropdown(event.value)
+        if text.startswith("/"):
+            self._update_dropdown(text)
         else:
             self._dropdown.display = False
 
-    def on_input_submitted(self, event: Input.Submitted) -> None:
-        text = self._input.value.strip()
+    def _submit(self) -> None:
+        text = self._input.text.strip()
         if text:
             self.post_message(self.Submitted(value=text))
-            self._input.value = ""
+            self._input.text = ""
             self.value = ""
         self._dropdown.display = False
 
@@ -146,10 +160,10 @@ class ChatInput(Vertical):
         actually changes; an unchanged value fires no Changed event and would
         otherwise leave the flag armed, swallowing the next real keystroke.
         """
-        self._suppress_dropdown = text != self._input.value and not reopen
-        self._input.value = text
+        self._suppress_dropdown = text != self._input.text and not reopen
+        self._input.text = text
         self._input.focus()
-        self._input.cursor_position = len(self._input.value)
+        self._input.move_cursor(self._input.document.end)
 
     def _apply_autocomplete(self, suggestion: Suggestion) -> None:
         """Insert the completed text and move cursor to the end."""
@@ -221,7 +235,7 @@ class ChatInput(Vertical):
         # immediately while `/stock ` waits for a symbol. A bare trailing space
         # lists all modes so they are discoverable without memorizing them;
         # applying one does not re-open the menu (see the _suppress_dropdown guard
-        # in on_input_changed).
+        # in on_text_area_changed).
         if cmd.modes:
             tokens = rest.split()
             if rest.endswith(" ") or not rest:

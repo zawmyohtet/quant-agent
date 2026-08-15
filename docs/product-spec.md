@@ -91,7 +91,7 @@ By default, three sensitive tools require your explicit approval before running:
 ### 4.1 Layout
 - **Message view** — scrollable chat history: user messages, streamed agent responses, collapsible tool-call cards (with live progress on long-running tools), system notifications, and error banners.
 - **Status bar** — current activity (idle / thinking / running a specific tool, with elapsed seconds), model, provider, thread ID, token count.
-- **Chat input** — multiline input with `/`-command autocomplete (arrow keys navigate suggestions and mode keywords).
+- **Chat input** — auto-wrapping input (long text wraps within the box instead of scrolling off-screen; Enter always submits) with `/`-command autocomplete (arrow keys navigate suggestions and mode keywords).
 - **Footer** — Textual's built-in key-hint footer.
 - **Help screen** (`F1`) — every command grouped by category, plus the current keybindings.
 - **Thread selector** (`Ctrl+T`) — switch or delete past conversations.

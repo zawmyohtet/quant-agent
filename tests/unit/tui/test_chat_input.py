@@ -210,12 +210,14 @@ class TestChatInputAutocomplete:
         app = _App()
         async with app.run_test():
             widget = app.query_one(ChatInput)
-            # Simulate user having typed "/ana" (cursor lands at end after first value set)
-            widget._input.value = "/ana"
-            assert widget._input.cursor_position == 4
+            # Simulate user having typed "/ana" (cursor lands at end after real typing;
+            # setting .text directly doesn't move it, so move it explicitly here).
+            widget._input.text = "/ana"
+            widget._input.move_cursor(widget._input.document.end)
+            assert widget._input.cursor_location == (0, 4)
             widget._apply_autocomplete(Suggestion(label="/analyze", insert_text="/analyze "))
-            assert widget._input.value == "/analyze "
-            assert widget._input.cursor_position == len("/analyze ")
+            assert widget._input.text == "/analyze "
+            assert widget._input.cursor_location == (0, len("/analyze "))
 
     async def test_apply_autocomplete_keeps_cursor_at_end_after_focus(self) -> None:
         from textual.app import App
@@ -227,11 +229,12 @@ class TestChatInputAutocomplete:
         app = _App()
         async with app.run_test():
             widget = app.query_one(ChatInput)
-            widget._input.value = "/sc"
-            assert widget._input.cursor_position == 3
+            widget._input.text = "/sc"
+            widget._input.move_cursor(widget._input.document.end)
+            assert widget._input.cursor_location == (0, 3)
             widget._apply_autocomplete(Suggestion(label="/screen", insert_text="/screen "))
-            assert widget._input.value == "/screen "
-            assert widget._input.cursor_position == len("/screen ")
+            assert widget._input.text == "/screen "
+            assert widget._input.cursor_location == (0, len("/screen "))
 
     async def test_set_text_suppresses_dropdown_reopen(self) -> None:
         from textual.app import App
@@ -261,7 +264,7 @@ class TestChatInputAutocomplete:
             widget = app.query_one(ChatInput)
             # Completing /workflow (which has an arg_completer) must reopen the
             # dropdown to show workflow names, without a backspace-space dance.
-            widget._input.value = "/wo"
+            widget._input.text = "/wo"
             await pilot.pause()
             widget._apply_autocomplete(
                 Suggestion(label="/workflow", insert_text="/workflow ", reopen=True)
@@ -281,7 +284,7 @@ class TestChatInputAutocomplete:
             widget = app.query_one(ChatInput)
             # /market takes no positional, so completing it should immediately
             # reveal its mode list.
-            widget._input.value = "/mar"
+            widget._input.text = "/mar"
             await pilot.pause()
             widget._apply_autocomplete(
                 Suggestion(label="/market", insert_text="/market ", reopen=True)
@@ -303,7 +306,7 @@ class TestChatInputAutocomplete:
             widget = app.query_one(ChatInput)
             # /model has neither an arg_completer nor modes: completing it leaves
             # nothing to offer, so the menu closes.
-            widget._input.value = "/mod"
+            widget._input.text = "/mod"
             await pilot.pause()
             widget._apply_autocomplete(
                 Suggestion(label="/model", insert_text="/model ", reopen=False)
@@ -322,7 +325,7 @@ class TestChatInputAutocomplete:
         async with app.run_test() as pilot:
             widget = app.query_one(ChatInput)
             # Typing a space opens the mode menu…
-            widget._input.value = "/stock AAPL "
+            widget._input.text = "/stock AAPL "
             await pilot.pause()
             assert widget._dropdown.display is True
             # …and selecting a mode closes it and keeps it closed.
@@ -382,7 +385,7 @@ class TestChatInputNavigation:
             widget = app.query_one(ChatInput)
             await pilot.press("/", "m", "o")
             await pilot.press("down", "enter")
-            assert widget._input.value == "/model "
+            assert widget._input.text == "/model "
             assert widget._dropdown.display is False
             assert app.submitted == []
 
@@ -394,7 +397,7 @@ class TestChatInputNavigation:
             assert widget._dropdown.display is False
             await pilot.press("enter")
             assert app.submitted == ["/model x"]
-            assert widget._input.value == ""
+            assert widget._input.text == ""
 
     async def test_tab_completes_first_when_nothing_highlighted(self) -> None:
         app = self._make_app()
@@ -402,7 +405,7 @@ class TestChatInputNavigation:
             widget = app.query_one(ChatInput)
             await pilot.press("/", "m", "o")
             await pilot.press("tab")
-            assert widget._input.value == "/model "
+            assert widget._input.text == "/model "
             assert widget._dropdown.display is False
 
     async def test_escape_hides_dropdown_and_keeps_text(self) -> None:
@@ -413,12 +416,5 @@ class TestChatInputNavigation:
             assert widget._dropdown.display is True
             await pilot.press("escape")
             assert widget._dropdown.display is False
-            assert widget._input.value == "/mo"
+            assert widget._input.text == "/mo"
 
-
-class TestChatInputWidget:
-    """Unit tests for ChatInput widget configuration."""
-
-    def test_input_does_not_select_on_focus(self) -> None:
-        widget = ChatInput()
-        assert widget._input.select_on_focus is False

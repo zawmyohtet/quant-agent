@@ -69,7 +69,7 @@ ChatInput {
 
 #chat-input-field {
     border: none;
-    height: 1;
+    height: auto;
     padding: 0;
     background: transparent;
 }

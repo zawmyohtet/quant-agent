@@ -70,7 +70,7 @@ All TUI ↔ agent coupling flows through `adapter/events.py` and `AgentRunner`. 
 | `session_state.py` | `SessionState` dataclass — `config`, `thread_id`, `token_count`, `is_running`, `current_activity` (None / "thinking" / a tool name), `turn_started_at`. Also owns the SQLite thread-metadata store (`~/.quantagent/sessions.db`, joined against the LangGraph checkpointer's own `checkpoints` table so a thread only "exists" once it has real content). |
 | `commands.py` | Slash-command `REGISTRY` — see §5 (full command table lives in `docs/product-spec.md`). |
 | `_history.py` | Replays checkpointed LangGraph messages into `MessageView` when switching threads. |
-| `widgets/` | `message_view.py` (virtualized chat history, max 50 DOM nodes), `chat_input.py` (multiline input + `/`-command autocomplete dropdown), `status_bar.py` (activity/model/provider/thread/tokens), `approval_dialog.py` (HITL modal), `thread_selector.py` (Ctrl+T modal), `help_screen.py` (F1 modal — commands by category + keybindings), `picker.py` (generic list-selection modal used by `/workflow`, `/report`, `/universe` when no argument is given). |
+| `widgets/` | `message_view.py` (virtualized chat history, max 50 DOM nodes), `chat_input.py` (auto-wrapping `TextArea`-based input, Enter always submits + `/`-command autocomplete dropdown), `status_bar.py` (activity/model/provider/thread/tokens), `approval_dialog.py` (HITL modal), `thread_selector.py` (Ctrl+T modal), `help_screen.py` (F1 modal — commands by category + keybindings), `picker.py` (generic list-selection modal used by `/workflow`, `/report`, `/universe` when no argument is given). |
 
 **Key principle:** widgets never contain business logic — they render state and emit messages.
 
