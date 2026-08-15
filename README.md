@@ -174,7 +174,6 @@ Type a space after the command (and its argument) to see the available modes in 
 | `/provider <name>` | Switch data provider (`yfinance`, `alpha_vantage`, `polygon`). |
 | `/theme [name]` | List or switch the UI theme. |
 | `/apikey <provider> <key>` | Save an API key to `~/.quantagent/.env`. |
-| `/memory` | Print your `QUANTAGENT.md` memory file. |
 
 ## Configuration
 
@@ -184,7 +183,6 @@ All user data lives in `~/.quantagent/`:
 |---|---|
 | `config.toml` | Model, provider, disabled skills, approval list |
 | `.env` | API keys (chmod 600) |
-| `QUANTAGENT.md` | Personal memory — portfolio, preferences, watchlist (injected every turn) |
 | `skills/` | Custom skill overrides and new skills |
 | `sessions.db` | Thread history |
 

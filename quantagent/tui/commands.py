@@ -178,15 +178,6 @@ async def _handle_retry(args: list[str], app: QuantAgentApp) -> None:
         _system(app, "No previous user message to retry.")
 
 
-def _handle_memory(args: list[str], app: QuantAgentApp) -> None:
-    memory_path = _DEFAULT_CONFIG_DIR / "QUANTAGENT.md"
-    if memory_path.exists():
-        content = memory_path.read_text()
-        _system(app, f"**QUANTAGENT.md**\n\n{content}")
-    else:
-        _system(app, "No QUANTAGENT.md found. Create one at ~/.quantagent/QUANTAGENT.md")
-
-
 def _handle_exit(args: list[str], app: QuantAgentApp) -> None:
     app.exit()
 
@@ -637,9 +628,6 @@ REGISTRY: list[SlashCommand] = [
         "Save API key to ~/.quantagent/.env.",
         _handle_apikey,
         category="Config",
-    ),
-    SlashCommand(
-        "memory", "/memory", "Print QUANTAGENT.md content.", _handle_memory, category="Config"
     ),
     # Analysis
     SlashCommand(

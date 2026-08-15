@@ -24,29 +24,6 @@ logger = logging.getLogger(__name__)
 # Root used by FilesystemBackend — skills paths are resolved relative to this
 BACKEND_ROOT = Path.home() / ".quantagent"
 
-# Long-term memory file. deepagents' MemoryMiddleware loads it into the system
-# prompt and the agent writes learned preferences back to it via edit_file.
-MEMORY_PATH = BACKEND_ROOT / "QUANTAGENT.md"
-
-_MEMORY_TEMPLATE = """\
-# QuantAgent Memory
-
-Durable context about the user and how they like to work. QuantAgent updates
-this file automatically as it learns from your conversations.
-
-## User Preferences
-
-<!-- e.g. risk tolerance, favored strategies, universes, reporting style -->
-"""
-
-
-def _ensure_memory_file() -> None:
-    """Seed the memory file so the agent's edit_file has a target to update."""
-    if MEMORY_PATH.exists():
-        return
-    BACKEND_ROOT.mkdir(parents=True, exist_ok=True)
-    MEMORY_PATH.write_text(_MEMORY_TEMPLATE)
-
 
 def _parse_model_string(model: str) -> tuple[str, str | None]:
     """Parse 'provider:model_name' into (model_name, provider).
@@ -105,7 +82,6 @@ def create_quant_agent(
       3. Extra dirs       (config.extra_skill_dirs)
     """
     model = _create_chat_model(config)
-    _ensure_memory_file()
 
     tools = build_tool_registry(config)
 
@@ -138,9 +114,6 @@ def create_quant_agent(
         system_prompt=BASE_SYSTEM_PROMPT,
         backend=backend,
         skills=resolved.skill_dirs,   # ordered list — last wins for same name
-        # Absolute path: FilesystemBackend runs virtual_mode=False, so both the
-        # middleware read and the agent's edit_file writes resolve to this file.
-        memory=[str(MEMORY_PATH)],
         checkpointer=checkpointer,
         middleware=middleware,
     )

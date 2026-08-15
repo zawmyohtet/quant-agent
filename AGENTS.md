@@ -21,6 +21,13 @@ pandas-ta / vectorbt, managed with uv.
 **The TUI never imports from `agent/` or `tools/`. The agent never imports from `tui/`.**
 All coupling is through `adapter/events.py` and `AgentRunner`.
 
+## Documentation
+
+`docs/architecture.md` (technical spec) and `docs/product-spec.md` (features) must always
+reflect the current implementation — no planned/future work. Update them whenever you
+change module structure, tools, commands, or providers. All AI coding agents must read
+and follow them.
+
 ## Skills System
 
 Skills are **directories** under `skills/` with a `SKILL.md` (YAML frontmatter + Markdown)
@@ -31,7 +38,6 @@ is read at startup; full body is loaded on demand when matched.
 
 - `agent/skills.py` (`SkillResolver`) resolves paths only — does NOT parse SKILL.md bodies.
 - `agent/prompts.py` contains persona only — no domain knowledge. Domain knowledge belongs in skills.
-- `QUANTAGENT.md` is always-on memory (portfolio, preferences). Skills are on-demand methodology.
 
 ## Coding Conventions
 

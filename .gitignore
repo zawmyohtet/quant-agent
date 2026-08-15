@@ -219,7 +219,6 @@ __marimo__/
 # Streamlit
 .streamlit/secrets.toml
 
-docs/
 .langgraph_api
 
 # pytest-textual-snapshot report
