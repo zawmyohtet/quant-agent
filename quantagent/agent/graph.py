@@ -2,12 +2,16 @@
 from __future__ import annotations
 
 import logging
+import shutil
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
 from deepagents import create_deep_agent
 from deepagents.backends.filesystem import FilesystemBackend
+from deepagents.middleware import SkillsMiddleware
+from langchain.agents.middleware import TodoListMiddleware
+from langchain.agents.middleware.types import AgentMiddleware
 from langchain.chat_models import init_chat_model
 
 from quantagent.agent.middleware.approval import ApprovalMiddleware
@@ -21,8 +25,48 @@ from quantagent.tui.config import QuantAgentConfig
 
 logger = logging.getLogger(__name__)
 
-# Root used by FilesystemBackend — skills paths are resolved relative to this
+# Root used by the agent's main FilesystemBackend (its own read/write workspace).
+# Skill sources use their own separate, unrestricted backend — see create_quant_agent.
 BACKEND_ROOT = Path.home() / ".quantagent"
+
+# Where resolved skill folders are staged for deepagents to scan — see
+# _stage_resolved_skills().
+_SKILLS_STAGING_DIR = BACKEND_ROOT / ".resolved-skills"
+
+
+def _stage_resolved_skills(skill_dirs: list[str]) -> Path:
+    """Materialize resolved skill directories as symlinks under one staging root.
+
+    deepagents' ``SkillsMiddleware`` expects each ``sources`` entry to be a
+    directory *containing* skill subdirectories (each with its own SKILL.md) —
+    not an individual skill's own directory. ``SkillResolver.resolve()`` already
+    computes the final, precedence-resolved list of *individual* skill folders
+    (built-in -> user -> extra, last wins, disabled skills excluded), so handing
+    that list straight to ``sources=`` doesn't match deepagents' expected shape:
+    deepagents would ``ls()`` each individual skill folder looking for
+    sub-subdirectories, find none, and silently report zero skills.
+
+    This stages the already-resolved folders as symlinks under one directory,
+    rebuilt on every call, so deepagents can scan it the way it expects without
+    reimplementing SkillResolver's merge/filter logic in deepagents-native terms.
+
+    Args:
+        skill_dirs: Resolved, precedence-ordered individual skill directory
+            paths (``ResolvedSkills.skill_dirs``).
+
+    Returns:
+        Path to the staging directory, ready to pass as a single ``sources``
+        entry to ``SkillsMiddleware``.
+    """
+    if _SKILLS_STAGING_DIR.exists():
+        shutil.rmtree(_SKILLS_STAGING_DIR)
+    _SKILLS_STAGING_DIR.mkdir(parents=True, exist_ok=True)
+
+    for skill_dir in skill_dirs:
+        source = Path(skill_dir)
+        (_SKILLS_STAGING_DIR / source.name).symlink_to(source, target_is_directory=True)
+
+    return _SKILLS_STAGING_DIR
 
 
 def _parse_model_string(model: str) -> tuple[str, str | None]:
@@ -91,10 +135,27 @@ def create_quant_agent(
     )
     resolved = resolver.resolve()
 
-    # FilesystemBackend makes skill files accessible to the agent as readable paths.
-    backend = FilesystemBackend(root_dir=str(BACKEND_ROOT))
+    # Main backend for the agent's own file tools, sandboxed under BACKEND_ROOT.
+    # virtual_mode=False is explicit and deliberate — deepagents' own reference CLI
+    # (deepagents-code) uses the same setting for its main working-directory backend;
+    # virtual_mode is intended for virtual path semantics (e.g. CompositeBackend), not
+    # as a sandbox for a trusted local-dev tool like this one.
+    backend = FilesystemBackend(root_dir=str(BACKEND_ROOT), virtual_mode=False)
 
-    middleware = [
+    # Skills get a dedicated, separate backend instance rather than sharing `backend`
+    # (mirrors deepagents-code's PluginSkillsMiddleware wiring). Skill sources are
+    # absolute paths from unrelated roots (built-in package dir, ~/.quantagent/skills,
+    # extra dirs) — a different trust model from the agent's own writable workspace,
+    # so they shouldn't be constrained by the main backend's root_dir/virtual_mode.
+    skills_root = _stage_resolved_skills(resolved.skill_dirs)
+    skills_middleware = SkillsMiddleware(
+        backend=FilesystemBackend(virtual_mode=False),
+        sources=[str(skills_root)],
+    )
+
+    middleware: list[AgentMiddleware[Any, Any, Any]] = [
+        TodoListMiddleware(),  # not auto-injected by create_deep_agent since 0.7.0
+        skills_middleware,
         ErrorLoggingMiddleware(),
         ToolProgressMiddleware(),
         SummarizationMiddleware(token_threshold=80_000, model=model),
@@ -113,7 +174,6 @@ def create_quant_agent(
         tools=tools,
         system_prompt=BASE_SYSTEM_PROMPT,
         backend=backend,
-        skills=resolved.skill_dirs,   # ordered list — last wins for same name
         checkpointer=checkpointer,
         middleware=middleware,
     )
