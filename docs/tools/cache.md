@@ -1,126 +1,219 @@
-# `quantagent/tools/cache.py`
+# Data Cache
 
-Local infrastructure module: a small async, SQLite-backed key-value cache
-with per-entry TTL, used to avoid redundant calls to rate-limited/slow data
-providers (e.g. re-fetching an S&P 500 member's sector classification or
-earnings calendar on every request). It is **not** exposed as an agent tool
-— confirmed by grepping `quantagent/agent/tools_registry.py`, which never
-imports or references `DataCache`. It is internal infrastructure consumed by
-other tool modules: `quantagent/tools/sector_analysis.py` (caches per-symbol
-industry classification) and `quantagent/tools/event_analysis.py` (caches
-per-symbol earnings calendars). Those modules construct their own
-`DataCache()` instances and call `get`/`set` directly; the agent never
-touches the cache API.
+`quantagent/tools/cache.py`
+
+A local caching system that stores data on your computer so the app doesn't have to download the same information over and over from the internet. Think of it like a notebook where you write down answers so you can look them up later instead of asking someone every time.
+
+**Not exposed as an agent tool.** This is internal infrastructure used by other tools (like sector analysis and earnings calendars) to speed up their work. You don't interact with it directly.
 
 ---
 
-## DataCache
+## Why Do We Need a Cache?
 
-**Agent-facing tool name:** Not exposed as an agent tool / internal
-infrastructure.
+When you ask QuantAgent to analyze 500 stocks, it needs to download data for each one — prices, company information, sector classifications, and more. Each download takes time and uses up your data provider's allowance (many providers limit how many requests you can make per day).
 
-**Purpose:** Provide a simple `get`/`set`/`invalidate`/`clear` cache backed
-by a local SQLite file, so tool modules that need to fetch per-symbol data
-across large universes (hundreds of tickers) can memoize expensive or
-rate-limited provider calls instead of re-fetching on every request.
+Without a cache, every time you run a screen or generate a report, the app would download all that data again, even though most of it hasn't changed since yesterday. That would be slow and wasteful.
 
-**Why built this way:** SQLite (via `aiosqlite`) gives a durable,
-zero-dependency-service cache that survives process restarts (unlike an
-in-memory dict) without requiring a separate cache server (unlike Redis) —
-appropriate for a single-user desktop/CLI tool. The schema is created
-lazily on every connection (`CREATE TABLE IF NOT EXISTS`) rather than via a
-separate migration step, since there's only ever one table. Each `get`/
-`set`/`invalidate`/`clear` call opens and closes its own connection
-(`_connect()` returns a fresh `_CacheConnection` async context manager each
-time) rather than holding one open — simplest-possible concurrency model,
-trading a little per-call overhead for never having to reason about
-connection lifetime or sharing across concurrent async tasks.
+The cache solves this by saving downloaded data to your hard drive. The next time you need the same information, the app checks the cache first. If the data is there and still fresh, it uses the cached version instantly instead of downloading it again.
 
-**Math:** No math — this is the "how it works" file, so the mechanics
-are the emphasis:
+---
 
-- **Storage:** One SQLite table, `cache(key TEXT PRIMARY KEY, value TEXT NOT
-  NULL, expires_at REAL NOT NULL)`, in a file at `db_path` (default
-  `cache_dir() / "datacache.db"`, i.e. `~/.quantagent/cache/datacache.db`,
-  overridable process-wide via the `QUANTAGENT_HOME` env var — see
-  `quantagent/tools/_paths.py`). The parent directory is created on demand
-  (`ensure_dir`) before every connection.
-- **Cache key scheme:** `DataCache` itself is key-agnostic — the `key`
-  passed to `get`/`set`/`invalidate` is just an opaque string chosen by the
-  caller. In practice, callers namespace keys by purpose and symbol, e.g.
-  `sector_analysis.py` uses `f"classification:{sym}"` and
-  `event_analysis.py` uses `f"earnings_cal:{sym}"`. There is no key
-  hashing, prefix enforcement, or automatic namespacing done by this
-  module — collisions across call sites are avoided purely by callers
-  choosing distinct prefixes by convention.
-- **TTL handling:** `set(key, value, ttl=3600)` stores `expires_at =
-  time.time() + ttl` (default TTL 1 hour if the caller doesn't override
-  it). `get(key)` checks `expires_at <= time.time()`: if expired, it
-  deletes the row on the spot and returns `None` (lazy expiry — there is no
-  background sweeper; expired rows are only cleaned up the next time
-  they're looked up, or via `clear()`). Real callers set much longer,
-  purpose-specific TTLs — e.g. `_CLASSIFICATION_TTL_SEC = 7 * 24 * 3600`
-  (one week) for sector/industry classification, and
-  `_CALENDAR_TTL_SEC = 12 * 3600` (12 hours) for earnings calendars — since
-  those values change slowly relative to how often they're queried.
-- **Serialization (`_encode`/`_decode`):** Every value is stored as a JSON
-  "envelope" string, not raw JSON of the value itself:
-  - Plain values (dict/list/str/number/etc.) are wrapped as
-    `{"kind": "json", "payload": value}` and stored via `json.dumps`.
-  - `pandas.DataFrame` values are detected with `isinstance(value,
-    pd.DataFrame)` and wrapped as `{"kind": "dataframe", "payload":
-    value.to_json(orient="split", date_format="iso")}` — i.e. the
-    DataFrame is serialized to JSON text (not pickled and not written as
-    Parquet), using the `"split"` orientation (separate `columns`/`index`/
-    `data` arrays) and ISO-formatted dates, then that JSON string is itself
-    embedded as the `payload` field of the outer envelope (so a DataFrame
-    round-trips as JSON nested inside JSON).
-  - On read, `_decode` inspects `envelope["kind"]`: for `"json"` it returns
-    `payload` as-is; for `"dataframe"` it reconstructs the frame via
-    `pd.read_json(StringIO(payload), orient="split")`, and if the resulting
-    index is a tz-naive `DatetimeIndex`, it localizes it to UTC
-    (`tz_localize("UTC")`) — compensating for `to_json`/`read_json` losing
-    timezone info on datetime indexes across the round trip.
-  - This envelope scheme is why one cache table can transparently hold both
-    OHLCV-style DataFrames and plain JSON documents (classification dicts,
-    earnings event lists) without the caller needing to know or specify
-    which kind of value is being stored.
-- **Connection lifecycle:** `_CacheConnection` is a tiny async context
-  manager: `__aenter__` opens an `aiosqlite.Connection` and applies
-  `_SCHEMA` (`CREATE TABLE IF NOT EXISTS`), `__aexit__` closes it. Every
-  public method (`get`, `set`, `invalidate`, `clear`) opens one of these,
-  does its query, `commit()`s (for mutating operations), and lets the
-  `async with` block close the connection.
+## How the Cache Works
 
-**Usage:**
+### Storage Location
+
+The cache lives in a single file on your computer:
+
+**Default location:** `~/.quantagent/cache/datacache.db`
+
+This is a SQLite database — a lightweight, self-contained database that doesn't require any special software to run. It's just a file that stores data in an organized way.
+
+You can change where the cache lives by setting the `QUANTAGENT_HOME` environment variable, or by passing a custom path when creating a `DataCache` object.
+
+### What Gets Cached
+
+The cache stores **key-value pairs** — think of it like a dictionary where each entry has:
+- A **key** (a label like `"classification:AAPL"` or `"earnings_cal:MSFT"`)
+- A **value** (the actual data — could be a company's sector classification, a list of earnings dates, or even a whole spreadsheet of price history)
+- An **expiration time** (when the data should be considered stale)
+
+Different tools use the cache for different purposes:
+
+| Tool | What it caches | How long |
+|------|----------------|----------|
+| Sector analysis | Which sector and industry each stock belongs to | 7 days |
+| Earnings analysis | Upcoming earnings dates for each stock | 12 hours |
+
+The cache itself doesn't care what kind of data you store — it's completely generic. The tools that use it decide what to cache and for how long.
+
+### How Expiration Works
+
+Every cached item has an expiration timestamp. When you ask the cache for data, it checks:
+
+1. **Does this key exist?** If not, return nothing.
+2. **Has it expired?** If the current time is past the expiration time, delete the cached item and return nothing.
+3. **Is it still fresh?** Return the cached data.
+
+This is called **lazy expiration** — expired items aren't cleaned up automatically in the background. They're only removed when someone tries to access them. This keeps the cache simple and efficient.
+
+If you want to manually clean up the cache, you can call `clear()` to delete everything, or `invalidate(key)` to delete a specific item.
+
+### Handling Different Data Types
+
+The cache can store two kinds of data:
+
+1. **Regular data** — dictionaries, lists, numbers, text (anything that can be converted to JSON)
+2. **DataFrames** — pandas DataFrames (the spreadsheet-like tables used throughout QuantAgent)
+
+Both types are stored the same way from your perspective, but internally they're handled differently:
+
+- **Regular data** is converted to JSON text and stored as-is.
+- **DataFrames** are also converted to JSON, but with special handling to preserve column names, row indexes, and date/time information. When you retrieve a DataFrame, it's reconstructed exactly as it was stored, including timezone information on date columns.
+
+You don't need to worry about these details — the cache figures out what kind of data you're storing and retrieves it in the same format.
+
+---
+
+## DataCache API
+
+### Constructor
+
 ```python
-from quantagent.tools.cache import DataCache
-
-cache = DataCache()  # or DataCache(db_path=some_path) to override location
-
-# Plain JSON value
-cached = await cache.get("classification:AAPL")
-if cached is None:
-    info = await provider.get_industry_classification("AAPL")
-    await cache.set("classification:AAPL", info, ttl=7 * 24 * 3600)  # 1 week
-
-# DataFrame value works identically — encoding is transparent to the caller
-df = await get_ohlcv(provider, "AAPL", period="1y")
-await cache.set("ohlcv:AAPL:1y:1d", df, ttl=3600)
-cached_df = await cache.get("ohlcv:AAPL:1y:1d")  # -> pd.DataFrame, tz-aware index
-
-# Maintenance
-await cache.invalidate("classification:AAPL")  # drop one entry
-await cache.clear()                             # drop everything
+DataCache(db_path: Path | None = None)
 ```
-- `DataCache(db_path: Path | None = None)` — optional explicit SQLite file
-  path; defaults to `~/.quantagent/cache/datacache.db` (or
-  `$QUANTAGENT_HOME/cache/datacache.db`).
-- `async get(key: str) -> Any | None` — returns the decoded value, or `None`
-  if the key is missing or has expired (expired rows are deleted as a side
-  effect of the lookup).
-- `async set(key: str, value: Any, ttl: int = 3600) -> None` — encodes and
-  upserts (`INSERT OR REPLACE`) the value with `expires_at = now + ttl`
-  seconds.
-- `async invalidate(key: str) -> None` — deletes one key.
-- `async clear() -> None` — deletes every row in the table.
+
+**Parameters:**
+
+| Name | Type | Default | Description |
+|------|------|---------|-------------|
+| `db_path` | `Path \| None` | `None` | Optional path to the SQLite database file. If `None`, uses `~/.quantagent/cache/datacache.db` (or `$QUANTAGENT_HOME/cache/datacache.db`). |
+
+**Returns:** A new `DataCache` instance.
+
+### Methods
+
+#### get
+
+```python
+async get(key: str) -> Any | None
+```
+
+Retrieves a cached value by its key.
+
+**Parameters:**
+
+| Name | Type | Description |
+|------|------|-------------|
+| `key` | `str` | The cache key to look up |
+
+**Returns:** The cached value (dict, list, DataFrame, etc.), or `None` if the key doesn't exist or has expired. If the item has expired, it's deleted from the cache as a side effect.
+
+#### set
+
+```python
+async set(key: str, value: Any, ttl: int = 3600) -> None
+```
+
+Stores a value in the cache with an expiration time.
+
+**Parameters:**
+
+| Name | Type | Default | Description |
+|------|------|---------|-------------|
+| `key` | `str` | required | The cache key (e.g. `"classification:AAPL"`) |
+| `value` | `Any` | required | The value to cache (dict, list, DataFrame, etc.) |
+| `ttl` | `int` | `3600` | Time-to-live in seconds (default: 1 hour) |
+
+**Returns:** `None`
+
+**Example:** Store a classification for 7 days:
+```python
+await cache.set("classification:AAPL", {"sector": "Technology", "industry": "Software"}, ttl=7*24*3600)
+```
+
+#### invalidate
+
+```python
+async invalidate(key: str) -> None
+```
+
+Deletes a specific key from the cache.
+
+**Parameters:**
+
+| Name | Type | Description |
+|------|------|-------------|
+| `key` | `str` | The cache key to delete |
+
+**Returns:** `None`
+
+#### clear
+
+```python
+async clear() -> None
+```
+
+Deletes all entries from the cache.
+
+**Parameters:** None
+
+**Returns:** `None`
+
+---
+
+## Design Decisions
+
+### Why SQLite Instead of an In-Memory Cache?
+
+An in-memory cache (storing data in RAM) would be faster, but it would disappear every time you close the app. You'd have to re-download everything on startup, which defeats the purpose.
+
+SQLite gives us **persistence** — the data survives restarts, crashes, and system reboots. It's also **zero-dependency** — you don't need to install a separate database server like PostgreSQL or Redis. The SQLite library is bundled with Python, so it just works.
+
+### Why Per-Call Connections?
+
+Every time you access the cache (get, set, invalidate, or clear), the app opens a fresh connection to the database, does its work, and closes the connection. This might seem wasteful — wouldn't it be faster to keep a connection open?
+
+The answer is **simplicity and safety**. QuantAgent runs many operations in parallel (downloading data for hundreds of stocks at once, for example). If we kept a single connection open, we'd have to worry about multiple threads trying to use it at the same time, which can cause errors or data corruption.
+
+By opening and closing connections for each operation, we avoid these concurrency issues entirely. The overhead of opening a connection is tiny (microseconds), so the performance cost is negligible.
+
+### Why Lazy Expiration?
+
+Some caching systems run a background process that periodically scans for and deletes expired items. We chose not to do this because:
+
+1. **Simplicity** — no background threads, no cleanup logic, no edge cases.
+2. **Efficiency** — we only delete items when someone actually tries to access them. If an item is never accessed again, it just sits there harmlessly until the next cache clear.
+3. **Predictability** — the cache's behavior is completely deterministic. There's no mystery about when cleanup happens.
+
+The trade-off is that the cache file might accumulate expired items over time, taking up disk space. In practice, this isn't a problem — the cache is small (a few megabytes at most), and you can manually clear it if needed.
+
+### Why an Envelope Format?
+
+When storing data, the cache wraps it in a JSON "envelope" that looks like this:
+
+```json
+{"kind": "json", "payload": <your data>}
+```
+
+or for DataFrames:
+
+```json
+{"kind": "dataframe", "payload": <dataframe as JSON>}
+```
+
+This envelope tells the cache what kind of data it's storing, so it can reconstruct it correctly when you retrieve it. Without this, the cache wouldn't know whether a stored value should be returned as a dictionary, a list, or a DataFrame.
+
+The envelope approach lets one cache table hold mixed data types transparently — you can store a company classification (dictionary) and a price history (DataFrame) in the same cache without any special handling.
+
+---
+
+## What This Means for You
+
+As a user, you don't interact with the cache directly. But understanding how it works helps you understand QuantAgent's behavior:
+
+- **First run is slow** — when you run a screen or report for the first time, the app has to download all the data from scratch. This can take a few minutes for large universes like the S&P 500.
+- **Subsequent runs are fast** — the next time you run the same screen, most of the data is already cached, so it completes in seconds.
+- **Data stays fresh** — the cache automatically expires old data (after 7 days for classifications, 12 hours for earnings calendars), so you're always working with reasonably current information.
+- **You can clear the cache** — if you ever need to force a fresh download (for example, if you suspect the cache has stale data), you can delete the cache file or use the `clear()` method.
+
+The cache is one of the reasons QuantAgent feels responsive after the initial setup — it's doing everything it can to avoid redundant work and give you fast answers.

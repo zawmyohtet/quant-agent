@@ -1,313 +1,431 @@
-# Trade Journal
+# Trade Journal Tools
 
-Source: `quantagent/tools/trade_journal.py`
+`quantagent/tools/trade_journal.py`
 
-A trade journal with a **forward-only lifecycle** and automatic **MAE/MFE**
-(Maximum Adverse/Favorable Excursion) capture at close. Storage is a single
-SQLite file at `~/.quantagent/trades.db` (schema created on first connect via
-`_SCHEMA` / `CREATE TABLE IF NOT EXISTS trades`).
+A trade journal that forces discipline into your trading process. Every trade idea is written down with a thesis *before* it's acted on, status can only move forward (no quietly erasing a bad call), and every close is scored against what the market actually did intraday (MAE/MFE), not just the entry-to-exit return.
 
-The point of this module isn't bookkeeping for its own sake — it's forcing
-the discipline that separates a repeatable trading process from noise: every
-idea is written down with a thesis *before* it's acted on, status can only
-move forward (no quietly erasing a bad call), and every close is scored
-against what the market actually did intraday (MAE/MFE), not just the
-entry-to-exit return.
+The journal is stored in a single SQLite file at `~/.quantagent/trades.db`.
 
 ---
 
-## TradeIdea (model)
+## The Trade Lifecycle
 
-**Agent-facing tool name:** Not exposed as an agent tool (it's the return
-type of every journal function below).
-
-**Purpose:** The single record representing one trade idea and its current
-lifecycle state — thesis, entry plan, target/stop, timestamps, prices, and
-computed outcome fields.
-
-**Why built this way:** A pydantic `BaseModel` gives every journal function a
-validated, serializable return type (`model_dump_json`) so the agent layer
-can hand it straight back to the LLM or the TUI without extra glue. Fields
-that only make sense once a trade has happened (`entered_at`, `exit_price`,
-`mae_pct`, `mfe_pct`, `outcome`) are `None` until they're populated by
-`update_trade_status`/`close_trade`, rather than being computed at read time —
-so closed-trade numbers are immutable facts, not re-derived on every read.
-
-**Math:** N/A (no computation lives on the model itself).
-
-**Usage:** Fields: `id` (12-hex-char uuid), `symbol`, `thesis`, `entry_plan`,
-`target`, `stop`, `status`, `created_at`, `entered_at`, `closed_at`,
-`entry_price`, `exit_price`, `realized_pnl_pct`, `mae_pct`, `mfe_pct`,
-`outcome` (`"win"` / `"loss"`), `notes` (list of strings, append-only).
-
----
-
-## Lifecycle state machine
-
-Enforced by `_require_transition`, backed by the `_TRANSITIONS` table. This
-is the one piece of logic every other function in the module depends on —
-**no transition may move a trade backwards**, and any transition not
-explicitly listed raises `ValueError`:
+Every trade in the journal follows a **forward-only lifecycle** — you can't move backwards or skip stages. This enforces discipline: you can't "un-close" a trade or pretend you had a different plan after the fact.
 
 ```
-idea            -> {entry_ready, invalidated}
-entry_ready     -> {active, invalidated}
-active          -> {partially_closed, closed}
-partially_closed -> {closed}
-closed          -> {}   (terminal)
-invalidated     -> {}   (terminal)
+idea → entry_ready → active → partially_closed → closed
+  ↓         ↓
+invalidated invalidated
 ```
 
-```
-        ┌──────┐   entry_ready    ┌─────────────┐    active    ┌────────┐
-        │ idea │ ───────────────> │ entry_ready │ ────────────>│ active │
-        └──┬───┘                 └──────┬──────┘               └───┬────┘
-           │ invalidated                │ invalidated              │
-           v                            v                          │ partially_closed / closed
-     ┌─────────────┐              ┌─────────────┐                  v
-     │ invalidated │              │ invalidated │           ┌─────────────────┐   closed   ┌────────┐
-     └─────────────┘              └─────────────┘           │ partially_closed│ ──────────>│ closed │
-                                                              └─────────────────┘            └────────┘
-                (active can also go straight to closed)
-```
+**Lifecycle stages:**
+- **idea** — you've written down the thesis and plan, but haven't acted yet
+- **entry_ready** — the setup is forming, you're watching for entry
+- **active** — you've entered the trade and it's live
+- **partially_closed** — you've taken partial profits (optional stage)
+- **closed** — the trade is complete, P&L is recorded
+- **invalidated** — the thesis was wrong, you killed the trade before entry
 
-Rejected examples: `active -> idea`, `closed -> active`, `invalidated ->`
-anything, `idea -> active` (must pass through `entry_ready` first), `idea ->
-closed`. The error message echoes the allowed set, e.g. *"Invalid transition
-closed -> active (lifecycle is forward-only; allowed from closed: none)"*.
+**Terminal states:** `closed` and `invalidated` are final — no transitions out.
+
+**Rejected transitions:** You can't go from `active` back to `idea`, or from `closed` to `active`, or skip `entry_ready` and go straight from `idea` to `active`. The journal enforces the lifecycle.
 
 ---
 
 ## log_trade_idea
 
-**Agent-facing tool name:** `journal_log_trade`
+**Agent tool:** `journal_log_trade`
 
-**Purpose:** Records a new trade idea before any money moves — symbol,
-thesis, entry plan, optional target/stop — starting it in `idea` status.
-This is the "write it down before you act" step that everything downstream
-(discipline gate, stats) depends on existing.
+Records a new trade idea before any money moves — the "write it down before you act" step.
 
-**Why built this way:** Forces a thesis and entry plan to exist as plain
-text at creation time, so later postmortems can be checked against what was
-actually planned rather than a reconstructed memory. The symbol is
-uppercased for consistent lookups; the id is a short (12 hex char)
-`uuid4` slice — long enough to avoid collisions, short enough to reference
-in conversation.
+### What It Does
 
-**Math:** None.
+Creates a new trade idea in the journal with:
+- **Symbol** — what stock you're looking at
+- **Thesis** — *why* you think this trade will work
+- **Entry plan** — *when* and *how* you'll enter (price level, conditions, etc.)
+- **Target** (optional) — where you expect the stock to go
+- **Stop** (optional) — where you'll exit if you're wrong
 
-**Usage:**
-- Params: `symbol: str`, `thesis: str`, `entry_plan: str`, `target: float |
-  None = None`, `stop: float | None = None`.
-- Returns: `TradeIdea` (status `"idea"`, `created_at` set to now UTC).
-- Example:
-  ```python
-  trade = await log_trade_idea(
-      symbol="nvda",
-      thesis="Breaking out of a 6-week base on rising volume; AI capex cycle intact.",
-      entry_plan="Buy on close above 135 with 2% account risk.",
-      target=160.0,
-      stop=128.0,
-  )
-  # trade.id == "a1b2c3d4e5f6", trade.status == "idea"
-  ```
+This forces you to articulate your thinking *before* you act, so later you can review whether your thesis was right or whether you were just guessing.
+
+### How It Works
+
+1. **Validate inputs** — thesis and entry plan are required (can't be empty)
+2. **Generate ID** — creates a short 12-character hex UUID
+3. **Set timestamps** — `created_at` is set to now (UTC)
+4. **Store in database** — saves the trade idea with status "idea"
+5. **Return trade** — returns the complete `TradeIdea` object
+
+### Parameters
+
+| Name | Type | Default | Description |
+|------|------|---------|-------------|
+| `symbol` | `str` | required | Stock ticker (upper-cased internally) |
+| `thesis` | `str` | required | Why this trade should work |
+| `entry_plan` | `str` | required | When and how you'll enter |
+| `target` | `float \| None` | `None` | Price target |
+| `stop` | `float \| None` | `None` | Stop-loss price |
+
+### Returns
+
+A `TradeIdea` object with status "idea" and all fields populated.
+
+### Usage
+
+**Python API:**
+```python
+trade = await log_trade_idea(
+    symbol="NVDA",
+    thesis="Breaking out of a 6-week base on rising volume; AI capex cycle intact.",
+    entry_plan="Buy on close above 135 with 2% account risk.",
+    target=160.0,
+    stop=128.0
+)
+# trade.id == "a1b2c3d4e5f6", trade.status == "idea"
+```
+
+**Agent tool:**
+```
+journal_log_trade(
+    symbol="NVDA",
+    thesis="Breaking out of a 6-week base on rising volume",
+    entry_plan="Buy on close above 135",
+    target=160.0,
+    stop=128.0
+)
+```
 
 ---
 
 ## update_trade_status
 
-**Agent-facing tool name:** `journal_update_status`
+**Agent tool:** `journal_update_status`
 
-**Purpose:** Advances a journaled trade to its next lifecycle stage (e.g.
-`idea -> entry_ready`, `entry_ready -> active`), optionally appending a note.
-This is how a plan becomes a live position in the record.
+Advances a trade to its next lifecycle stage — how a plan becomes a live position.
 
-**Why built this way:** Every call runs through `_require_transition` first,
-so a stale or careless status update can't silently rewrite history (you
-can't "un-close" a trade or skip backwards to relitigate a decision).
-Moving to `active` specifically requires `entry_price` — MAE/MFE and P&L math
-at close depend on having a real fill price, so the function refuses to
-enter that state without one. `entered_at`/`closed_at` are stamped
-automatically based on the target status, and notes are appended (never
-overwritten) to `notes`, preserving a running commentary log per trade.
+### What It Does
 
-**Math:** None directly; it sets up the inputs (`entry_price`, `entered_at`)
-that `close_trade` later uses for P&L/MAE/MFE.
+Moves a trade from one stage to the next (e.g. `idea` → `entry_ready`, `entry_ready` → `active`). You can also append a note to document what happened.
 
-**Usage:**
-- Params: `trade_id: str`, `status: str`, `notes: str | None = None`,
-  `entry_price: float | None = None`.
-- Raises `ValueError` on an illegal transition, or on moving to `active`
-  without `entry_price`.
-- Returns: updated `TradeIdea`.
-- Example:
-  ```python
-  trade = await update_trade_status(
-      trade_id="a1b2c3d4e5f6",
-      status="active",
-      entry_price=136.20,
-      notes="Filled at open, slightly above plan.",
-  )
-  ```
-- Legal transitions: see the [lifecycle diagram](#lifecycle-state-machine)
-  above.
+### How It Works
+
+1. **Validate transition** — checks that the move is allowed by the lifecycle
+2. **Check entry price** — if moving to `active`, `entry_price` is required (MAE/MFE math depends on it)
+3. **Set timestamps** — `entered_at` is set when moving to `active`, `closed_at` when moving to `closed`
+4. **Append note** — if provided, the note is added to the trade's note history (notes are append-only, never overwritten)
+5. **Update database** — saves the new status and timestamps
+6. **Return trade** — returns the updated `TradeIdea`
+
+**Why entry_price is required for active:** MAE/MFE and P&L calculations at close depend on having a real fill price. The journal refuses to move to `active` without one.
+
+### Parameters
+
+| Name | Type | Default | Description |
+|------|------|---------|-------------|
+| `trade_id` | `str` | required | Trade ID |
+| `status` | `str` | required | New status (must be a valid transition) |
+| `notes` | `str \| None` | `None` | Optional note to append |
+| `entry_price` | `float \| None` | `None` | Required when moving to `active` |
+
+### Returns
+
+The updated `TradeIdea` object.
+
+### Usage
+
+**Python API:**
+```python
+trade = await update_trade_status(
+    trade_id="a1b2c3d4e5f6",
+    status="active",
+    entry_price=136.20,
+    notes="Filled at open, slightly above plan."
+)
+```
+
+**Agent tool:**
+```
+journal_update_status(
+    trade_id="a1b2c3d4e5f6",
+    status="active",
+    entry_price=136.20,
+    notes="Filled at open"
+)
+```
 
 ---
 
 ## close_trade
 
-**Agent-facing tool name:** `journal_close_trade` (provider-bound wrapper
-`_journal_close_trade` in `tools_registry.py`, registered via
-`_bind_provider`)
+**Agent tool:** `journal_close_trade`
 
-**Purpose:** Closes an active (or partially closed) trade, recording the
-realized P&L and scoring the trade against the best/worst prices the market
-offered during the holding period (MAE/MFE) — the core "how did this trade
-actually behave" postmortem step.
+Closes an active trade, recording the realized P&L and scoring the trade against the best/worst prices the market offered during the holding period (MAE/MFE).
 
-**Why built this way:** `_require_transition(trade.status, "closed")` is
-still enforced here — only `active` or `partially_closed` trades can close,
-so you can't close an `idea` that was never entered. Outcome is a simple
-binary `"win"`/`"loss"` classification (`pnl > 0` is a win, everything else
-— including flat — counts as a loss) so `compute_trade_stats` has an
-unambiguous win/loss split downstream. MAE/MFE computation failures (data
-provider errors) are swallowed and logged rather than raised, so a data
-outage doesn't block the ability to close a position and record P&L.
+### What It Does
 
-**Math:**
-- Realized P&L: `pnl = round(exit_price / entry_price - 1, 4)` (i.e. simple
-  percentage return; `None` if `entry_price` is unset).
-- Outcome: `"win"` if `pnl is not None and pnl > 0`, else `"loss"`.
-- MAE/MFE (`_compute_excursions`, long-side only):
-  1. Requires both `entry_price` and `entered_at`; otherwise returns
-     `(None, None)`.
-  2. Fetches 1 year of daily OHLCV for the symbol via
-     `provider.get_ohlcv(symbol, period="1y")`.
-  3. Windows the OHLCV to bars on/after `entered_at` normalized to midnight
-     (`pd.Timestamp(entered_at).normalize()`), inclusive.
-  4. **MFE** (Maximum Favorable Excursion) = `round(window["High"].max() /
-     entry_price - 1, 4)` — the best unrealized gain the position saw.
-  5. **MAE** (Maximum Adverse Excursion) = `round(window["Low"].min() /
-     entry_price - 1, 4)` — the worst unrealized drawdown the position saw
-     (a negative number for a normal long trade that dipped below entry).
-  6. If the OHLCV fetch throws, or the windowed frame is empty, both are
-     `None` (logged as a warning, not raised).
+Marks a trade as closed and calculates:
+- **Realized P&L** — the actual return from entry to exit
+- **MAE (Maximum Adverse Excursion)** — the worst unrealized drawdown the position saw
+- **MFE (Maximum Favorable Excursion)** — the best unrealized gain the position saw
+- **Outcome** — "win" if P&L > 0, "loss" otherwise
 
-**Usage:**
-- Params: `provider: AbstractDataProvider`, `trade_id: str`, `exit_price:
-  float`, `outcome_notes: str | None = None`.
-- Raises `ValueError` if the trade isn't in `active`/`partially_closed`.
-- Returns: updated `TradeIdea` with `status="closed"`, `closed_at`,
-  `exit_price`, `realized_pnl_pct`, `mae_pct`, `mfe_pct`, `outcome` all set.
-- Example:
-  ```python
-  trade = await close_trade(
-      provider, trade_id="a1b2c3d4e5f6", exit_price=152.00,
-      outcome_notes="Hit target, momentum stalling on lower volume.",
-  )
-  # trade.realized_pnl_pct == round(152.00/136.20 - 1, 4) == 0.1160
-  # trade.outcome == "win"
-  ```
+This is the "how did this trade actually behave" postmortem step. MAE/MFE tell you whether you managed the trade well — if your MFE was 20% but you only captured 5%, you left a lot on the table.
+
+### How It Works
+
+1. **Validate transition** — only `active` or `partially_closed` trades can close
+2. **Calculate P&L** — `(exit_price / entry_price) - 1`
+3. **Determine outcome** — "win" if P&L > 0, "loss" otherwise
+4. **Fetch price history** — downloads 1 year of daily OHLCV for the symbol
+5. **Calculate MAE/MFE:**
+   - Window the data to bars on/after `entered_at`
+   - **MFE** = `(max(High) / entry_price) - 1` — best unrealized gain
+   - **MAE** = `(min(Low) / entry_price) - 1` — worst unrealized drawdown
+6. **Store results** — saves exit price, P&L, MAE, MFE, outcome, and closed_at timestamp
+7. **Return trade** — returns the completed `TradeIdea`
+
+**MAE/MFE are long-side only:** This implementation assumes long positions. For short positions, the formulas would be inverted.
+
+**Graceful failure:** If the price data fetch fails, MAE/MFE are set to `None` and a warning is logged, but the trade still closes. A data outage shouldn't block you from recording P&L.
+
+### Parameters
+
+| Name | Type | Description |
+|------|------|-------------|
+| `provider` | `AbstractDataProvider` | Your data provider |
+| `trade_id` | `str` | Trade ID |
+| `exit_price` | `float` | Exit price |
+| `outcome_notes` | `str \| None` | Optional notes about the exit |
+
+### Returns
+
+The updated `TradeIdea` with status "closed" and all outcome fields populated.
+
+### Usage
+
+**Python API:**
+```python
+trade = await close_trade(
+    provider,
+    trade_id="a1b2c3d4e5f6",
+    exit_price=152.00,
+    outcome_notes="Hit target, momentum stalling on lower volume."
+)
+# trade.realized_pnl_pct == 0.1160 (11.6% gain)
+# trade.outcome == "win"
+# trade.mfe_pct == 0.1523 (15.23% was the best unrealized gain)
+# trade.mae_pct == -0.0234 (-2.34% was the worst unrealized drawdown)
+```
+
+**Agent tool:**
+```
+journal_close_trade(
+    trade_id="a1b2c3d4e5f6",
+    exit_price=152.00,
+    outcome_notes="Hit target"
+)
+```
 
 ---
 
 ## get_open_trades
 
-**Agent-facing tool name:** `journal_open_trades`
+**Agent tool:** `journal_open_trades`
 
-**Purpose:** Lists everything still "live" in the journal — ideas not yet
-acted on, entries pending, active positions, and partial exits — so the
-agent (or trader) always has a single view of open risk.
+Lists everything still "live" in the journal — ideas not yet acted on, entries pending, active positions, and partial exits.
 
-**Why built this way:** Filters on the fixed `OPEN_STATUSES` tuple
-(`idea, entry_ready, active, partially_closed`), i.e. anything not
-`closed`/`invalidated`, ordered most-recent-first — a cheap, always-correct
-definition of "still open" that stays consistent as new statuses can't be
-added without touching the lifecycle table itself.
+### What It Does
 
-**Math:** None.
+Returns all trades that haven't reached a terminal state (`closed` or `invalidated`). This gives you a single view of your open risk.
 
-**Usage:**
-- Params: none.
-- Returns: `list[TradeIdea]`.
-- Example: `open_trades = await get_open_trades()`
+### How It Works
+
+Filters on the fixed `OPEN_STATUSES` tuple: `idea`, `entry_ready`, `active`, `partially_closed`. Returns trades ordered most-recent-first.
+
+### Parameters
+
+None.
+
+### Returns
+
+A list of `TradeIdea` objects, most recent first.
+
+### Usage
+
+**Python API:**
+```python
+open_trades = await get_open_trades()
+for trade in open_trades:
+    print(f"{trade.symbol}: {trade.status} - {trade.thesis[:50]}...")
+```
+
+**Agent tool:**
+```
+journal_open_trades()
+```
 
 ---
 
 ## get_trade_history
 
-**Agent-facing tool name:** `journal_history`
+**Agent tool:** `journal_history`
 
-**Purpose:** Retrieves journaled trades created within a lookback window,
-optionally filtered to one lifecycle status — used for reviewing recent
-activity and as the data source `check_circuit_breaker` reads from.
+Retrieves trades created within a lookback window, optionally filtered by status.
 
-**Why built this way:** Filters on `created_at` (not `closed_at`), so a
-trade logged 29 days ago that's still open shows up in a 30-day history even
-if it hasn't closed. The optional `status` filter lets callers narrow to,
-say, just `"closed"` trades for P&L review without a separate query.
+### What It Does
 
-**Math:** None.
+Returns trades created in the last N days, optionally filtered to a specific status (e.g. only "closed" trades for P&L review).
 
-**Usage:**
-- Params: `days: int = 30`, `status: str | None = None`.
-- Returns: `list[TradeIdea]`, most-recent-first.
-- Example:
-  ```python
-  closed_last_week = await get_trade_history(days=7, status="closed")
-  ```
+### How It Works
+
+Filters on `created_at` (not `closed_at`), so a trade logged 29 days ago that's still open shows up in a 30-day history even if it hasn't closed. This gives you a complete picture of recent activity.
+
+### Parameters
+
+| Name | Type | Default | Description |
+|------|------|---------|-------------|
+| `days` | `int` | `30` | Lookback window in days |
+| `status` | `str \| None` | `None` | Optional status filter |
+
+### Returns
+
+A list of `TradeIdea` objects, most recent first.
+
+### Usage
+
+**Python API:**
+```python
+closed_last_week = await get_trade_history(days=7, status="closed")
+```
+
+**Agent tool:**
+```
+journal_history(days=7, status="closed")
+```
 
 ---
 
 ## compute_trade_stats
 
-**Agent-facing tool name:** `journal_stats`
+**Agent tool:** `journal_stats`
 
-**Purpose:** Summarizes edge and risk-management quality across every closed
-trade with a recorded P&L — win rate, profit factor, expectancy, and the
-worst losing streak — the numbers that tell you whether your process
-actually has an edge.
+Summarizes your trading performance across all closed trades — the numbers that tell you whether your process actually has an edge.
 
-**Why built this way:** Only trades with `status = 'closed' AND
-realized_pnl_pct IS NOT NULL` are included, so open positions or trades
-closed without a fill price can't distort the stats. An empty journal
-returns `{"total_trades": 0}` rather than raising or dividing by zero.
-`profit_factor` is explicitly `None` (not `0` or `inf`) when there are no
-losses, since "infinite profit factor" isn't a meaningful number to feed
-back into risk sizing.
+### What It Does
 
-**Math** (all computed over the list of `realized_pnl_pct` values, each a
-fractional return like `0.116` for +11.6%):
-- `wins` = pnls where `p > 0`; `losses` = pnls where `p <= 0` (flat trades
-  count as losses, matching `close_trade`'s outcome classification).
-- **Win rate** = `len(wins) / len(pnls)`.
-- **Average win** = `sum(wins) / len(wins)` (0.0 if no wins).
-- **Average loss** = `sum(losses) / len(losses)` (0.0 if no losses; this is
-  a negative number when there are losses).
-- **Gross loss** = `abs(sum(losses))`.
-- **Profit factor** = `sum(wins) / gross_loss` — gross profit divided by
-  gross loss; `None` if `gross_loss == 0`.
-- **Expectancy** = `sum(pnls) / len(pnls)` — i.e. the mean realized return
-  per trade across the whole sample (equivalent to `win_rate * avg_win +
-  loss_rate * avg_loss` since it's the same set partitioned into wins/losses).
-- **Max consecutive losses** (`_max_consecutive_losses`): walks the P&L list
-  in chronological order (`ORDER BY closed_at`), incrementing a running
-  streak counter for each `pnl <= 0` and resetting to 0 on any `pnl > 0`;
-  returns the largest streak seen.
-- `avg_mae` / `avg_mfe`: plain means of the non-null `mae_pct`/`mfe_pct`
-  values across the same closed trades (`None` if none recorded).
-- All numeric outputs are `round(x, 4)`.
+Calculates key performance metrics:
+- **Win rate** — what percentage of trades were winners?
+- **Average win/loss** — how much do you make when you're right vs. lose when you're wrong?
+- **Profit factor** — gross profits / gross losses (should be > 1.0)
+- **Expectancy** — average return per trade
+- **Max consecutive losses** — your worst losing streak
+- **Average MAE/MFE** — how much drawdown did you typically endure, and how much unrealized gain did you leave on the table?
 
-**Usage:**
-- Params: none.
-- Returns: `dict` — `{total_trades, win_rate, avg_win, avg_loss,
-  profit_factor, expectancy, max_consecutive_losses, avg_mae, avg_mfe}`
-  (or just `{"total_trades": 0}` when the journal has no qualifying
-  closed trades).
-- Example:
-  ```python
-  stats = await compute_trade_stats()
-  # {"total_trades": 12, "win_rate": 0.5833, "avg_win": 0.084,
-  #  "avg_loss": -0.031, "profit_factor": 2.71, "expectancy": 0.0264,
-  #  "max_consecutive_losses": 2, "avg_mae": -0.045, "avg_mfe": 0.112}
-  ```
+### The Math
+
+**Win rate:** `wins / total_trades` where wins are trades with `pnl > 0`.
+
+**Average win:** `sum(wins) / len(wins)` — the mean P&L of winning trades.
+
+**Average loss:** `sum(losses) / len(losses)` — the mean P&L of losing trades (a negative number).
+
+**Profit factor:** `sum(wins) / abs(sum(losses))` — gross profit divided by gross loss. A profit factor of 2.0 means you made $2 for every $1 you lost. If there are no losses, profit factor is `None` (not infinite).
+
+**Expectancy:** `sum(all_pnls) / len(all_pnls)` — the mean realized return per trade. This is equivalent to `(win_rate * avg_win) + (loss_rate * avg_loss)`.
+
+**Max consecutive losses:** Walks through trades in chronological order, counting consecutive losses (`pnl <= 0`) and resetting on any win (`pnl > 0`). Returns the longest streak.
+
+**Average MAE/MFE:** Mean of the non-null `mae_pct` and `mfe_pct` values across all closed trades.
+
+### Parameters
+
+None.
+
+### Returns
+
+A dictionary with:
+```json
+{
+  "total_trades": 12,
+  "win_rate": 0.5833,
+  "avg_win": 0.084,
+  "avg_loss": -0.031,
+  "profit_factor": 2.71,
+  "expectancy": 0.0264,
+  "max_consecutive_losses": 2,
+  "avg_mae": -0.045,
+  "avg_mfe": 0.112
+}
+```
+
+Or just `{"total_trades": 0}` if there are no closed trades with recorded P&L.
+
+### Usage
+
+**Python API:**
+```python
+stats = await compute_trade_stats()
+print(f"Win rate: {stats['win_rate']:.1%}")
+print(f"Profit factor: {stats['profit_factor']:.2f}")
+print(f"Expectancy: {stats['expectancy']:.2%} per trade")
+```
+
+**Agent tool:**
+```
+journal_stats()
+```
+
+---
+
+## TradeIdea Model
+
+**Agent tool:** Not exposed (return type)
+
+The data model representing a single trade idea and its lifecycle state.
+
+### Fields
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `id` | `str` | 12-character hex UUID |
+| `symbol` | `str` | Stock ticker |
+| `thesis` | `str` | Why this trade should work |
+| `entry_plan` | `str` | When and how to enter |
+| `target` | `float \| None` | Price target |
+| `stop` | `float \| None` | Stop-loss price |
+| `status` | `str` | Current lifecycle stage |
+| `created_at` | `datetime` | When the idea was logged |
+| `entered_at` | `datetime \| None` | When the trade was entered |
+| `closed_at` | `datetime \| None` | When the trade was closed |
+| `entry_price` | `float \| None` | Fill price |
+| `exit_price` | `float \| None` | Exit price |
+| `realized_pnl_pct` | `float \| None` | Realized P&L as a decimal |
+| `mae_pct` | `float \| None` | Maximum adverse excursion |
+| `mfe_pct` | `float \| None` | Maximum favorable excursion |
+| `outcome` | `str \| None` | "win" or "loss" |
+| `notes` | `list[str]` | Append-only note history |
+
+---
+
+## Summary
+
+These trade journal tools help you maintain a disciplined trading process:
+
+- **log_trade_idea** — write down your thesis and plan before acting
+- **update_trade_status** — advance trades through the lifecycle
+- **close_trade** — record the outcome and calculate MAE/MFE
+- **get_open_trades** — see what's still live
+- **get_trade_history** — review recent activity
+- **compute_trade_stats** — measure your performance
+
+Use these tools to:
+- Force yourself to articulate your thinking before trading
+- Track every trade from idea to close
+- Score your trades against what the market actually did (MAE/MFE)
+- Measure your edge with win rate, profit factor, and expectancy
+- Review your process and identify areas for improvement
+
+Remember: the journal isn't just bookkeeping — it's a tool for learning. By reviewing your closed trades and their MAE/MFE, you can see whether you're managing entries and exits well, whether you're letting winners run, and whether you're cutting losers quickly. Over time, this feedback loop helps you refine your process and improve your results.
+
+The forward-only lifecycle is intentional — it prevents you from rewriting history. Once a trade is closed, the numbers are locked in. You can't go back and change your thesis or pretend you had a different plan. This honesty is what makes the journal useful for learning.

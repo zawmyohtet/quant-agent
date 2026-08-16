@@ -1,444 +1,474 @@
-# `quantagent/tools/market_breadth.py`
+# Market Breadth Tools
 
-Market breadth, market-timing, and regime-detection tools. The module is split
-into two tiers:
+`quantagent/tools/market_breadth.py`
 
-- **Fast path** (index/ETF data only) — `count_distribution_days`,
-  `detect_follow_through_day`, `compute_market_sentiment`, and the sector-ETF
-  proxy branch of `compute_percent_above_ma` / `detect_market_regime`. These
-  hit only a handful of tickers and always finish in seconds.
-- **Deep path** (universe-level, backed by `BreadthStore`) — the true
-  advance/decline line, new highs/lows, percent-above-MA, and breadth thrust
-  for hundreds of symbols (e.g. the S&P 500). Slow on the very first call
-  (cache warm-up), incremental and fast after that. See
-  `docs/tools/breadth_store.md` for the caching layer these rely on.
+Tools for measuring the overall health and direction of the stock market. While individual stock analysis tells you about specific companies, market breadth tells you about the market as a whole — is it healthy and broad-based, or narrow and fragile?
 
-The methodology throughout is classic O'Neil/CANSLIM/IBD-style market timing
-(distribution days, Follow-Through Days) plus Zweig-style breadth thrust and a
-standard advance/decline line, wrapped in a hand-built composite regime score.
+This module implements classic market-timing methodologies from traders like William O'Neil (CANSLIM/IBD) and Martin Zweig, plus a custom composite regime score that blends multiple signals into a single "how aggressive should I be?" recommendation.
+
+The tools are split into two speed tiers:
+- **Fast path** — uses only index ETFs and a handful of tickers, completes in seconds
+- **Deep path** — analyzes hundreds of stocks (like the full S&P 500), requires a cache warm-up on first use but is fast afterward
 
 ---
 
 ## count_distribution_days
 
-**Agent-facing tool name:** `count_distribution_days`
+**Agent tool:** `count_distribution_days`
 
-**Purpose:** Counts IBD-style "distribution days" — down days on rising
-volume — on an index over a trailing window, as a proxy for institutional
-selling pressure.
+Counts "distribution days" — down days on higher-than-normal volume — to detect institutional selling pressure.
 
-**Why built this way:** O'Neil's distribution-day count is a single-index,
-single-symbol calculation, so it needs no universe cache — it always uses the
-fast path (one `get_ohlcv` call, 6 months of history). The 0.2% decline
-threshold and 25-session window are the standard IBD definitions: small
-enough to catch routine institutional selling, but requiring higher volume
-than the prior session so ordinary low-volume drift doesn't count. Five or
-more distribution days in a 25-session window is IBD's classic "market under
-pressure" trigger; the code also adds a softer "caution" tier at 3+ that IBD
-practice treats as an early warning.
+### What It Does
 
-**Math:**
-- A session is a **distribution day** when both hold:
-  - `pct_change(Close) <= -0.002` (close down at least 0.2%)
-  - `Volume > Volume.shift(1)` (higher volume than the prior session)
-- Counted over the trailing `lookback_days` sessions (default **25**) of a
-  6-month history pull.
-- Signal thresholds (`_distribution_signal`):
-  - `count >= 5` → `"under-pressure"`
-  - `count >= 3` → `"caution"`
-  - otherwise → `"healthy"`
+A distribution day is when the market closes down 0.2% or more on higher volume than the previous day. This suggests big institutions are selling (distributing shares to retail investors). Too many distribution days in a short period signals that the market is under pressure.
 
-**Usage:**
-- Parameters: `provider` (data provider), `index_symbol` (default `"SPY"`;
-  `"QQQ"` also common), `lookback_days` (default `25`).
-- Returns: `{index_symbol, lookback_days, count, dates, signal}` where `dates`
-  is the ISO list of qualifying session dates.
-- Example: `await count_distribution_days(provider, index_symbol="QQQ", lookback_days=25)`
-  → `{"index_symbol": "QQQ", "lookback_days": 25, "count": 4, "dates": [...], "signal": "caution"}`
+### The Logic
+
+- **Distribution day criteria:**
+  - Close is down at least 0.2% from previous day
+  - Volume is higher than previous day's volume
+
+- **Signal thresholds** (over a 25-day window):
+  - 5+ distribution days → "under pressure" (market is weak)
+  - 3-4 distribution days → "caution" (watch closely)
+  - 0-2 distribution days → "healthy" (market is strong)
+
+### Parameters
+
+| Name | Type | Default | Description |
+|------|------|---------|-------------|
+| `provider` | `AbstractDataProvider` | required | Your data provider |
+| `index_symbol` | `str` | `"SPY"` | Index to analyze (SPY, QQQ, etc.) |
+| `lookback_days` | `int` | `25` | Window size (trading days) |
+
+### Returns
+
+A dictionary with:
+- `index_symbol` — which index was analyzed
+- `lookback_days` — window size
+- `count` — number of distribution days
+- `dates` — list of distribution day dates
+- `signal` — "healthy", "caution", or "under-pressure"
+
+### Usage
+
+**Python API:**
+```python
+result = await count_distribution_days(provider, index_symbol="SPY", lookback_days=25)
+```
+
+**Agent tool:**
+```
+count_distribution_days(index_symbol="SPY", lookback_days=25)
+```
 
 ---
 
 ## detect_follow_through_day
 
-**Agent-facing tool name:** `detect_follow_through_day`
+**Agent tool:** `detect_follow_through_day`
 
-**Purpose:** Detects an O'Neil Follow-Through Day (FTD) — the classic
-confirmation that a new market uptrend has begun after a correction.
+Detects a "Follow-Through Day" — the signal that a new uptrend has begun after a correction.
 
-**Why built this way:** Like distribution days, this is single-index and
-needs only 6 months of daily bars, so it's fast-path only. The algorithm
-follows O'Neil's method exactly: find the correction low, then scan forward
-day-by-day for the first qualifying rally session. Rally day 4+ is required
-because O'Neil found FTDs on days 1-3 are unreliable (too early, often false
-starts); day 4 onward is where the historical hit rate improves. The 1.25%
-minimum gain plus higher volume mirrors the distribution-day volume
-requirement in reverse — a rally attempt needs a demonstrable increase in
-buying demand, not just any up day.
+### What It Does
 
-**Math:**
-- `window` = trailing `lookback_days` sessions (default **60**) of a 6-month
-  pull.
-- `correction_low_date` = the date of the lowest `Close` in `window`
-  (`argmin`).
-- From that low forward (`after`), each session's **rally day** index is its
-  position after the low (low itself = rally day 0).
-- A **Follow-Through Day** is the first session at **rally day ≥ 4** where
-  both hold:
-  - `pct_change(Close) >= 0.0125` (gain of at least 1.25%)
-  - `Volume > Volume.shift(1)` (higher volume than the prior session)
-- Status (`_ftd_status`):
-  - FTD found → `"confirmed-uptrend"`
-  - no FTD yet, but `rally_day >= 1` and last close > close at the low →
-    `"rally-attempt"`
-  - otherwise → `"correction"`
+After a market correction (a decline from a high), traders look for confirmation that the bottom is in and a new uptrend is starting. A Follow-Through Day (FTD) is that confirmation — it's the first day (on or after rally day 4) where the market gains at least 1.25% on higher volume.
 
-**Usage:**
-- Parameters: `provider`, `index_symbol` (default `"SPY"`), `lookback_days`
-  (default `60`).
-- Returns: `{index_symbol, correction_low_date, rally_day, ftd_detected,
-  ftd_date, status}`.
-- Example: `await detect_follow_through_day(provider, index_symbol="SPY")`
-  → `{"index_symbol": "SPY", "correction_low_date": "2025-04-08", "rally_day": 6,
-  "ftd_detected": true, "ftd_date": "2025-04-14", "status": "confirmed-uptrend"}`
+### The Logic
+
+1. **Find the correction low** — the lowest close in the lookback window
+2. **Count rally days** — each day after the low is a rally day (day 1, day 2, etc.)
+3. **Look for FTD** — the first day (on or after rally day 4) where:
+   - Close is up at least 1.25% from previous day
+   - Volume is higher than previous day
+
+**Why day 4+?** O'Neil found that FTDs on days 1-3 are unreliable (too many false starts). Day 4 and beyond have a much better track record.
+
+### Signal States
+
+- `confirmed-uptrend` — FTD detected, new uptrend confirmed
+- `rally-attempt` — market is rallying but no FTD yet
+- `correction` — market is still in correction mode
+
+### Parameters
+
+| Name | Type | Default | Description |
+|------|------|---------|-------------|
+| `provider` | `AbstractDataProvider` | required | Your data provider |
+| `index_symbol` | `str` | `"SPY"` | Index to analyze |
+| `lookback_days` | `int` | `60` | Window size (trading days) |
+
+### Returns
+
+A dictionary with:
+- `index_symbol` — which index was analyzed
+- `correction_low_date` — date of the correction low
+- `rally_day` — current rally day count
+- `ftd_detected` — boolean, whether FTD was found
+- `ftd_date` — date of FTD (if detected)
+- `status` — "confirmed-uptrend", "rally-attempt", or "correction"
+
+### Usage
+
+**Python API:**
+```python
+result = await detect_follow_through_day(provider, index_symbol="SPY")
+```
+
+**Agent tool:**
+```
+detect_follow_through_day(index_symbol="SPY", lookback_days=60)
+```
 
 ---
 
 ## compute_percent_above_ma
 
-**Agent-facing tool name:** `compute_percent_above_ma`
+**Agent tool:** `compute_percent_above_ma`
 
-**Purpose:** Computes the percentage of a universe's members whose latest
-close is above each of several moving averages — a classic breadth-of-
-participation gauge (are most stocks trending up, or is the index being
-carried by a few names?).
+Measures what percentage of stocks in a universe are trading above their moving averages — a gauge of market breadth.
 
-**Why built this way:** For `universe="sector_etfs"` there are only 11
-tickers, so the function fetches them directly (fast path, 2y of daily bars)
-and never touches the cache. For real universes (`sp500`, `nasdaq100`), it
-delegates to `BreadthStore` via `_load_universe_closes`: computing "percent
-above 200-day MA" across 500 symbols every call would mean re-downloading 500
-symbols' history each time, which is why the incremental cache exists. If the
-store is cold and `allow_warmup=False` (the default the agent tool uses), the
-function degrades gracefully to the sector-ETF proxy rather than blocking or
-erroring — the result is flagged `proxy: true` so callers know it's an
-approximation. Any exception from the store (e.g. transient I/O) is caught
-and logged, falling back the same way rather than propagating.
+### What It Does
 
-**Math:**
-- Default `ma_periods = [20, 50, 200]` (session counts, i.e. SMA-20/50/200).
-- For each period `p` and each symbol's close series with at least `p`
-  observations: "above" iff `latest_close > mean(last p closes)` (simple
-  moving average, not exponential).
-- `pct_above[p] = round(count_above / n_eligible * 100, 2)`; `None` if no
-  symbol has enough history for that period.
+If 80% of S&P 500 stocks are above their 200-day moving average, that's a sign of broad strength. If only 30% are above, the market is narrow and weak — even if the index itself is near highs.
 
-**Usage:**
-- Parameters: `provider`, `universe` (default `"sector_etfs"`; also `"sp500"`,
-  `"nasdaq100"`), `ma_periods` (default `[20, 50, 200]`), `allow_warmup`
-  (default `True` at the library level; the agent tool pins it to `False` so
-  it never blocks on a slow warm-up — see `warm_breadth_cache`).
-- Returns: `{universe, proxy, n_symbols, pct_above: {period: pct_or_null}}`.
-- Example: `await compute_percent_above_ma(provider, universe="sp500", allow_warmup=False)`
-  → `{"universe": "sp500", "proxy": false, "n_symbols": 503,
-  "pct_above": {"20": 61.2, "50": 54.8, "200": 68.1}}` (or `proxy: true` with
-  the sector-ETF numbers if the sp500 cache is cold).
+### How It Works
+
+For each stock in the universe, checks whether the latest close is above the 20-day, 50-day, and 200-day simple moving averages. Reports the percentage of stocks above each MA.
+
+**Fast path vs. deep path:**
+- For `sector_etfs` (11 ETFs) — fetches data directly, always fast
+- For `sp500` or `nasdaq100` (hundreds of stocks) — uses the BreadthStore cache. If the cache is cold and `allow_warmup=False`, falls back to the sector ETF proxy instead of blocking.
+
+### Parameters
+
+| Name | Type | Default | Description |
+|------|------|---------|-------------|
+| `provider` | `AbstractDataProvider` | required | Your data provider |
+| `universe` | `str` | `"sector_etfs"` | Universe to analyze |
+| `ma_periods` | `list[int]` | `[20, 50, 200]` | Moving average periods |
+| `allow_warmup` | `bool` | `True` | Allow cache warm-up if needed |
+
+### Returns
+
+A dictionary with:
+- `universe` — which universe was analyzed
+- `proxy` — boolean, whether a proxy was used (true if cache was cold)
+- `n_symbols` — number of symbols analyzed
+- `pct_above` — dictionary mapping period → percentage (e.g. `{20: 65.2, 50: 58.1, 200: 72.4}`)
+
+### Usage
+
+**Python API:**
+```python
+result = await compute_percent_above_ma(provider, universe="sp500", allow_warmup=False)
+```
+
+**Agent tool:**
+```
+compute_percent_above_ma(universe="sp500")
+```
+
+The agent tool always uses `allow_warmup=False` to avoid blocking on a slow cache warm-up.
 
 ---
 
 ## compute_advance_decline
 
-**Agent-facing tool name:** `compute_advance_decline`
+**Agent tool:** `compute_advance_decline`
 
-**Purpose:** Computes the classic advance/decline (A/D) line for a universe —
-the running total of (advancing symbols − declining symbols) per day, the
-oldest and most direct measure of market breadth.
+Computes the advance/decline line — the running total of (advancing stocks - declining stocks) each day.
 
-**Why built this way:** This is inherently a deep-path, universe-wide
-calculation (every symbol counted every day), so it always warms/loads via
-`BreadthStore` (`allow_warmup=True` here — this is the one breadth function
-where the library itself will pay the warm-up cost rather than degrading to
-a proxy, since there is no sensible ETF proxy for a true breadth line). If the
-store can't be loaded, an empty `DataFrame` is returned rather than raising,
-so downstream report code can check `.empty` safely.
+### What It Does
 
-**Math:**
-- `diff = closes.diff()` per symbol (skip the first row, which is `NaN` for
-  every symbol).
-- `Advancing` = count of symbols with `diff > 0` per day; `Declining` = count
-  with `diff < 0`; `Unchanged` = count with `diff == 0`.
-- `NetAdvancing = Advancing - Declining`.
-- `ADLine = cumsum(NetAdvancing)` — the running A/D line.
-- `ADLine_SMA10`, `ADLine_SMA20` — 10- and 20-day simple moving averages of
-  the A/D line, for trend confirmation/divergence reading.
-- Trimmed to the trailing window implied by `period` via `_HISTORY_DAYS`:
-  `1m` → 21, `3m` → 63, `6m` → 126, `1y` → 252 sessions.
+The advance/decline (A/D) line is one of the oldest and most direct measures of market breadth. If the A/D line is rising, more stocks are advancing than declining — the market is broad and healthy. If the A/D line is falling while the index is rising, that's a bearish divergence — the rally is narrow and fragile.
 
-**Usage:**
-- Parameters: `provider`, `universe` (default `"sp500"`; also `"nasdaq100"`,
-  `"sector_etfs"`), `period` (`"1m"|"3m"|"6m"|"1y"`, default `"3m"`).
-- Returns: a `DataFrame` indexed by date with columns `Advancing, Declining,
-  Unchanged, NetAdvancing, ADLine, ADLine_SMA10, ADLine_SMA20` (empty if the
-  universe can't be loaded).
-- The agent tool (`compute_advance_decline`) serializes this via
-  `_history_payload` to `{latest: {...}, recent: {...last 10 rows...}}`.
-- Example: `await compute_advance_decline(provider, universe="sp500", period="3m")`.
+### How It Works
+
+For each day:
+1. Count how many stocks advanced (close > previous close)
+2. Count how many stocks declined (close < previous close)
+3. Compute net advancing = advancing - declining
+4. Add to the running total (cumulative sum)
+
+Also computes 10-day and 20-day moving averages of the A/D line for trend analysis.
+
+### Parameters
+
+| Name | Type | Default | Description |
+|------|------|---------|-------------|
+| `provider` | `AbstractDataProvider` | required | Your data provider |
+| `universe` | `str` | `"sp500"` | Universe to analyze |
+| `period` | `str` | `"3m"` | History window (1m, 3m, 6m, 1y) |
+
+### Returns
+
+A DataFrame with columns:
+- `Advancing` — count of advancing stocks
+- `Declining` — count of declining stocks
+- `Unchanged` — count of unchanged stocks
+- `NetAdvancing` — advancing - declining
+- `ADLine` — cumulative advance/decline line
+- `ADLine_SMA10` — 10-day moving average of A/D line
+- `ADLine_SMA20` — 20-day moving average of A/D line
+
+### Usage
+
+**Python API:**
+```python
+df = await compute_advance_decline(provider, universe="sp500", period="3m")
+```
+
+**Agent tool:**
+```
+compute_advance_decline(universe="sp500", period="3m")
+```
+
+The agent tool returns the latest values and the last 10 rows of history.
 
 ---
 
 ## compute_new_highs_lows
 
-**Agent-facing tool name:** `compute_new_highs_lows`
+**Agent tool:** `compute_new_highs_lows`
 
-**Purpose:** Counts, per day, how many universe members made a new 52-week
-high or low — another classic breadth measure, and one of Zweig's key inputs
-for spotting broad-based rallies/selloffs versus narrow ones.
+Counts how many stocks are making new 52-week highs vs. new 52-week lows each day.
 
-**Why built this way:** Requires the full close-price matrix for the
-universe over at least a year, so it is deep-path only via `BreadthStore`.
-`min_periods=126` on the rolling window means a symbol needs at least ~6
-months of history before it's eligible to register a new high/low — this
-avoids newly-listed or thinly-backed symbols spuriously registering "new
-highs" on day one of their available history.
+### What It Does
 
-**Math:**
-- `roll_max`/`roll_min` = rolling 252-session max/min of close, with
-  `min_periods=126` (so a symbol needs ≥126 sessions before it counts).
-- **NewHighs** (per day) = count of symbols where `close >= roll_max` (and
-  `roll_max` is defined); **NewLows** = count where `close <= roll_min`.
-- `NetNewHighs = NewHighs - NewLows`.
-- `HighLowRatio = NewHighs / (NewHighs + NewLows)`, rounded to 4 decimals;
-  undefined (`NaN`) on days with zero highs+lows.
-- `HL_SMA10` = 10-day SMA of `HighLowRatio`, rounded to 4 decimals.
-- Trimmed to the `period` window via the same `_HISTORY_DAYS` map as
-  `compute_advance_decline` (1m=21, 3m=63, 6m=126, 1y=252).
+A healthy market has more stocks making new highs than new lows. When new lows exceed new highs, that's a sign of weakness — even if the index itself is still near highs.
 
-**Usage:**
-- Parameters: `provider`, `universe` (default `"sp500"`), `period` (default
-  `"3m"`).
-- Returns: a `DataFrame` indexed by date with columns `NewHighs, NewLows,
-  NetNewHighs, HighLowRatio, HL_SMA10` (empty if the universe can't be
-  loaded).
-- The agent tool serializes via `_history_payload` the same way as
-  advance/decline.
-- Example: `await compute_new_highs_lows(provider, universe="nasdaq100", period="6m")`.
+### How It Works
+
+For each stock, computes a rolling 252-day (1-year) high and low. Then counts:
+- **NewHighs** — stocks where today's close >= the 252-day high
+- **NewLows** — stocks where today's close <= the 252-day low
+
+Also computes:
+- **NetNewHighs** — new highs - new lows
+- **HighLowRatio** — new highs / (new highs + new lows)
+- **HL_SMA10** — 10-day moving average of the ratio
+
+### Parameters
+
+| Name | Type | Default | Description |
+|------|------|---------|-------------|
+| `provider` | `AbstractDataProvider` | required | Your data provider |
+| `universe` | `str` | `"sp500"` | Universe to analyze |
+| `period` | `str` | `"3m"` | History window (1m, 3m, 6m, 1y) |
+
+### Returns
+
+A DataFrame with columns:
+- `NewHighs` — count of new 52-week highs
+- `NewLows` — count of new 52-week lows
+- `NetNewHighs` — new highs - new lows
+- `HighLowRatio` — ratio of new highs to total
+- `HL_SMA10` — 10-day moving average of ratio
+
+### Usage
+
+**Python API:**
+```python
+df = await compute_new_highs_lows(provider, universe="sp500", period="3m")
+```
+
+**Agent tool:**
+```
+compute_new_highs_lows(universe="sp500", period="3m")
+```
 
 ---
 
 ## compute_breadth_thrust
 
-**Agent-facing tool name:** `compute_breadth_thrust`
+**Agent tool:** `compute_breadth_thrust`
 
-**Purpose:** Computes a McClellan-style breadth oscillator: the spread
-between two EMAs of the ratio-adjusted daily net advances, used to detect
-breadth "thrusts" (broad, forceful moves) analogous to Zweig's original
-Breadth Thrust indicator.
+Computes a McClellan-style breadth oscillator to detect broad, forceful market moves.
 
-**Why built this way:** Same rationale as A/D and new highs/lows — needs the
-full universe close matrix, so it's deep-path only. The 19/39-day EMA spans
-are the standard McClellan Oscillator parameters (McClellan used 19- and
-39-day EMAs of daily net advances as an approximation of 10% and 5% trend
-smoothing constants); this module reuses that convention rather than
-inventing new spans, since it's a well-established and widely recognized
-breadth-momentum measure. Scaling the net-advance ratio by 1000 (rather than
-using a percentage or raw count) matches the traditional McClellan
-presentation so the ±50 thresholds read the same as in classic charting
-services.
+### What It Does
 
-**Math:**
-- `diff = closes.diff()`; `advancing`/`declining` = per-day counts as in the
-  A/D calculation.
-- `total = advancing + declining`.
-- `NetRatio = (advancing - declining) / total * 1000` (NaN/undefined when
-  `total == 0`).
-- `EMA19 = NetRatio.ewm(span=19).mean()`; `EMA39 = NetRatio.ewm(span=39).mean()`.
-- `Oscillator = EMA19 - EMA39` — this is the breadth-thrust value, rounded to
-  2 decimals throughout the returned history.
-- Signal (`_thrust_signal`) on the latest oscillator value:
-  - `> 50` → `"bullish"`
-  - `< -50` → `"bearish"`
-  - otherwise → `"neutral"`
-- History trimmed via `_HISTORY_DAYS[period]` as above.
+The breadth thrust measures the momentum of net advancing issues. A high positive thrust means the market is rising broadly and forcefully — a bullish signal. A negative thrust means the market is falling broadly — bearish.
 
-**Usage:**
-- Parameters: `provider`, `universe` (default `"sp500"`), `period` (default
-  `"3m"`).
-- Returns: `{thrust_value, thrust_signal, history: DataFrame[NetRatio, EMA19,
-  EMA39, Oscillator]}`; `thrust_value=None, thrust_signal="unavailable"` and
-  an empty history when the universe can't be loaded.
-- The agent tool pops `history` out and replaces it with `recent` (last 10
-  rows as JSON) before returning.
-- Example: `await compute_breadth_thrust(provider, universe="sp500", period="3m")`
-  → `{"thrust_value": 62.3, "thrust_signal": "bullish", "history": <DataFrame>}`.
+### How It Works
+
+1. Compute daily net advancing issues (advancing - declining)
+2. Normalize by total active issues (advancing + declining)
+3. Scale by 1000 (for readability)
+4. Compute 19-day and 39-day exponential moving averages
+5. Thrust = EMA19 - EMA39
+
+**Signal thresholds:**
+- Thrust > 50 → "bullish"
+- Thrust < -50 → "bearish"
+- Otherwise → "neutral"
+
+### Parameters
+
+| Name | Type | Default | Description |
+|------|------|---------|-------------|
+| `provider` | `AbstractDataProvider` | required | Your data provider |
+| `universe` | `str` | `"sp500"` | Universe to analyze |
+| `period` | `str` | `"3m"` | History window |
+
+### Returns
+
+A dictionary with:
+- `thrust_value` — latest thrust value
+- `thrust_signal` — "bullish", "bearish", or "neutral"
+- `history` — DataFrame with NetRatio, EMA19, EMA39, Oscillator columns
+
+### Usage
+
+**Python API:**
+```python
+result = await compute_breadth_thrust(provider, universe="sp500", period="3m")
+```
+
+**Agent tool:**
+```
+compute_breadth_thrust(universe="sp500", period="3m")
+```
 
 ---
 
 ## detect_market_regime
 
-**Agent-facing tool name:** `detect_market_regime`
-*(Note: the agent-facing wrapper `_detect_market_regime` takes no parameters
-of its own — it always calls the library function with its default
-`universe="sp500"`; the LLM cannot choose a different universe for this
-particular tool.)*
+**Agent tool:** `detect_market_regime`
 
-**Purpose:** Produces a single composite 0-100 market-regime score — blending
-cross-asset ratios, index trend, volatility, and breadth — mapped to a
-regime label (`strong-bull` … `strong-bear`) and a recommended equity
-exposure percentage range, intended as top-level "how aggressive should I be
-right now" guidance.
+Produces a composite 0-100 market regime score with a recommended equity exposure range.
 
-**Why built this way:** No single indicator reliably calls a regime, so the
-design averages nine independent, economically-motivated signals (each
-scored to `[-1, 1]`) rather than relying on one. Cross-asset ratios
-(equal-weight vs. cap-weight, small-cap vs. large-cap, cyclicals vs.
-defensives, stocks vs. bonds, high-yield vs. investment-grade credit) capture
-risk appetite and market internals that a single index price can't; trend and
-VIX capture the more traditional technical/volatility view; sector breadth
-and participation add a cross-check on how broad-based the move is. Breadth
-prefers the deep, universe-warmed score when the cache happens to already be
-warm (`_deep_breadth_score`), but **never blocks or triggers a warm-up** to
-get it (`allow_warmup=False`) — regime detection is meant to always return
-promptly, so it silently falls back to the sector-ETF proxy
-(`breadth_source: "sector-etf-proxy"`) when the universe cache is cold.
-Missing components (e.g. VIX provider outage) don't break the computation —
-they're simply dropped from the weighted average and the weights of the
-remaining components are renormalized, and a `confidence` score reports what
-fraction of available components agree in direction with the composite.
+### What It Does
 
-**Math:**
+Combines nine different market signals into a single score that tells you "how aggressive should I be right now?" The score maps to a regime label (strong-bull, bull, neutral, bear, strong-bear) and a recommended equity exposure range (e.g. 70-90% for bull).
 
-Component scores (each in `[-1, 1]`, `None` if data unavailable):
+### The Nine Components
 
-| Component | Formula | Notes |
-|---|---|---|
-| `concentration` | `_ratio_score(RSP/SPY, scale=0.05)` | equal-weight vs cap-weight — breadth/participation proxy |
-| `size` | `_ratio_score(IWM/SPY, scale=0.05)` | small-cap vs large-cap — risk appetite |
-| `cyclical_defensive` | `_ratio_score(XLY/XLP, scale=0.05)` | cyclicals vs defensives |
-| `stock_bond` | `_ratio_score(SPY/TLT, scale=0.10)` | stocks vs long bonds |
-| `credit` | `_ratio_score(HYG/LQD, scale=0.03)` | high-yield vs investment-grade credit spread proxy |
-| `trend` | `_trend_score(SPY)` | `+0.5` if close > 50-SMA, `+0.5` if close > 200-SMA (else `-0.5` each); range `{-1, 0, 1}` |
-| `volatility` | `_vix_score(vix)` | step function on VIX level (below) |
-| `breadth` | deep universe score if warm, else sector-ETF `% above 50-SMA` rescaled | `round(pct/50 - 1, 4)` |
-| `participation` | % of sector ETFs with positive 1-month return, rescaled | `round(pct_positive*2 - 1, 4)` |
+| Component | Weight | What it measures |
+|-----------|--------|------------------|
+| Concentration (RSP/SPY) | 10% | Equal-weight vs. cap-weight performance |
+| Size (IWM/SPY) | 10% | Small-cap vs. large-cap performance |
+| Cyclical/Defensive (XLY/XLP) | 10% | Risk-on vs. risk-off sector rotation |
+| Stock/Bond (SPY/TLT) | 10% | Stocks vs. bonds performance |
+| Credit (HYG/LQD) | 10% | High-yield vs. investment-grade credit |
+| Trend (SPY vs. 50/200 SMA) | 20% | Price trend (double weight!) |
+| Volatility (VIX level) | 10% | Market fear gauge |
+| Breadth (% above 50-SMA) | 10% | Market participation |
+| Participation (% sectors positive) | 10% | Sector breadth |
 
-`_ratio_score(num, den, scale)`: computes the 63-session change of
-`num.Close / den.Close` (`ratio[-1]/ratio[-64] - 1`), divides by `scale`, and
-clips to `[-1, 1]`. `scale` sets how large a 63-day ratio move is needed to
-reach a full ±1 (e.g. a 5% move in RSP/SPY over ~1 quarter maxes out
-`concentration`; a 10% move is needed to max out `stock_bond`; only 3% for
-`credit`, reflecting how much more sensitive credit spreads are).
+### How It Works
 
-`_vix_score(vix)` (VIX levels, lower = more bullish):
-- `vix < 15` → `1.0`
-- `15 ≤ vix < 20` → `0.5`
-- `20 ≤ vix < 25` → `0.0`
-- `25 ≤ vix < 30` → `-0.5`
-- `vix ≥ 30` → `-1.0`
-- `vix` unavailable → `0.0`
+1. **Compute each component** — each signal is scored from -1 (very bearish) to +1 (very bullish)
+2. **Weighted average** — multiply each score by its weight, sum them up
+3. **Map to 0-100** — composite = 50 × (1 + weighted_average)
+4. **Determine regime** — based on score thresholds (80+, 60+, 40+, 20+, <20)
+5. **Calculate confidence** — what fraction of components agree with the overall direction
 
-**Weights** (`_COMPONENT_WEIGHTS`, sum to 1.0):
+### Regime Bands
 
-| Component | Weight |
-|---|---|
-| concentration | 0.10 |
-| size | 0.10 |
-| cyclical_defensive | 0.10 |
-| stock_bond | 0.10 |
-| credit | 0.10 |
-| **trend** | **0.20** (double weight — the only component weighted 2x) |
-| volatility | 0.10 |
-| breadth | 0.10 |
-| participation | 0.10 |
+| Score | Regime | Exposure | Label |
+|-------|--------|----------|-------|
+| 80+ | strong-bull | 90-100% | strong |
+| 60-79 | bull | 70-90% | healthy |
+| 40-59 | neutral | 50-70% | neutral |
+| 20-39 | bear | 40-60% | weakening |
+| <20 | strong-bear | 25-40% | critical |
 
-`weighted = Σ(weight_i * score_i) / Σ(weight_i)` over available (non-`None`)
-components only (renormalized denominator).
+### Parameters
 
-`composite = round(50 * (1 + weighted), 2)` — maps `weighted ∈ [-1, 1]` onto
-a `[0, 100]` score, 50 being neutral.
+| Name | Type | Default | Description |
+|------|------|---------|-------------|
+| `provider` | `AbstractDataProvider` | required | Your data provider |
+| `universe` | `str` | `"sp500"` | Universe for breadth analysis |
 
-**Regime bands** (`_REGIME_BANDS`, first matching threshold from the top
-wins — i.e. `composite >= threshold`):
+### Returns
 
-| Score ≥ | Regime | Exposure band (min–max %) | Exposure label |
-|---|---|---|---|
-| 80 | `strong-bull` | 90–100% | strong |
-| 60 | `bull` | 70–90% | healthy |
-| 40 | `neutral` | 50–70% | neutral |
-| 20 | `bear` | 40–60% | weakening |
-| 0 | `strong-bear` | 25–40% | critical |
+A dictionary with:
+- `regime` — regime label
+- `score` — 0-100 composite score
+- `confidence` — 0-1 confidence level
+- `recommended_exposure` — {min_pct, max_pct, label}
+- `components` — detailed breakdown of each signal
+- `as_of` — date of analysis
 
-`exposure_band(score)` is the same mapping exposed as a standalone helper
-(returns just the `{min_pct, max_pct, label}` dict for a given 0-100 score),
-usable outside the full regime-detection call — e.g. by other tools that
-already have a composite score and just need the exposure guidance.
+### Usage
 
-`confidence = round(agreeing / len(available), 4)` where `agreeing` counts
-components whose sign matches the sign of `weighted`; defaults to `0.5` when
-there's no clear direction (`weighted == 0`) or no data at all.
+**Python API:**
+```python
+result = await detect_market_regime(provider, universe="sp500")
+```
 
-**Usage:**
-- Parameters: `provider`, `universe` (default `"sp500"`; only the underlying
-  library function accepts this — the agent tool always uses `"sp500"`).
-- Returns: `{regime, score, confidence, recommended_exposure: {min_pct,
-  max_pct, label}, components: {cross_asset: {...}, trend_direction,
-  volatility_regime, breadth_health, sector_participation, scores,
-  breadth_source}, as_of}`.
-- Example: `await detect_market_regime(provider, universe="sp500")`
-  → `{"regime": "bull", "score": 67.4, "confidence": 0.78,
-  "recommended_exposure": {"min_pct": 70, "max_pct": 90, "label": "healthy"},
-  "components": {...}, "as_of": "2026-08-15"}`.
+**Agent tool:**
+```
+detect_market_regime()
+```
+
+The agent tool always uses `universe="sp500"` and cannot be changed.
 
 ---
 
 ## compute_market_sentiment
 
-**Agent-facing tool name:** `compute_market_sentiment`
+**Agent tool:** `compute_market_sentiment`
 
-**Purpose:** A fast, "fear & greed"-style composite sentiment score from -100
-(extreme fear) to +100 (extreme greed), blending VIX level and term
-structure, sector-ETF breadth, and SPY momentum.
+Computes a "fear & greed" style sentiment score from -100 (extreme fear) to +100 (extreme greed).
 
-**Why built this way:** This is explicitly fast-path only — it never touches
-`BreadthStore` (breadth here always comes from `compute_percent_above_ma(...,
-universe="sector_etfs")`, 11 tickers) so it always returns quickly regardless
-of cache state, useful as a cheap standalone mood check distinct from the
-heavier `detect_market_regime`. Put/call ratio is a standard "fear & greed"
-input the code deliberately reports as `None` because none of the current
-data providers supply it — rather than silently omitting the field, it's kept
-in the output schema with a null value so downstream consumers know it's a
-recognized-but-unavailable input, not a bug.
+### What It Does
 
-**Math:**
-- `vix_score = _vix_score(vix) * 100` (reuses the same step function as
-  regime detection, scaled to ±100 instead of ±1).
-- `vix_term_structure`: `"contango"` if `VIX < VIX3M`, else `"backwardation"`
-  (`None` if either is unavailable).
-  - `_term_structure_score`: `contango → +25`, `backwardation → -50`
-    (asymmetric — backwardation, historically rarer and associated with
-    acute stress, is weighted as a stronger negative signal than contango is
-    a positive one).
-- `breadth = round(pct_above_50sma * 2 - 100, 2)` where `pct_above_50sma`
-  comes from the sector-ETF `compute_percent_above_ma` at the 50-day MA
-  (rescales 0-100% to -100..+100).
-- `momentum` (`_momentum_score`, SPY 1-year history):
-  - `ret_1m = close[-1]/close[-22] - 1`, `ret_3m = close[-1]/close[-64] - 1`
-  - `raw = (ret_1m / 0.03 + ret_3m / 0.06) / 2` — i.e. a 3% one-month move or
-    a 6% three-month move each maxes out its half of the average
-  - clipped to `[-1, 1]` then scaled to `[-100, 100]`
-- `score = round(mean(available components), 2)` over
-  `[vix_score, term_structure_score, breadth, momentum]`, skipping any
-  `None`s; `0.0` if none are available.
-- Label bands (`_SENTIMENT_LABELS`, first matching threshold wins):
-  - `score >= 60` → `"extreme-greed"`
-  - `score >= 20` → `"greed"`
-  - `score >= -20` → `"neutral"`
-  - `score >= -60` → `"fear"`
-  - otherwise → `"extreme-fear"`
+Combines four sentiment indicators into a single score:
+1. **VIX level** — low VIX = greed, high VIX = fear
+2. **VIX term structure** — contango = normal, backwardation = stress
+3. **Sector breadth** — % of sector ETFs above 50-day MA
+4. **Momentum** — SPY 1-month and 3-month returns
 
-**Usage:**
-- Parameters: `provider` only.
-- Returns: `{score, label, components: {put_call_ratio: null, vix_level,
-  vix_term_structure, breadth_score, momentum_score}}`.
-- Example: `await compute_market_sentiment(provider)`
-  → `{"score": 34.2, "label": "greed", "components": {"put_call_ratio": null,
-  "vix_level": 14.8, "vix_term_structure": "contango", "breadth_score": 22.0,
-  "momentum_score": 41.6}}`.
+### Signal Thresholds
+
+| Score | Label |
+|-------|-------|
+| 60+ | extreme-greed |
+| 20-59 | greed |
+| -19 to 19 | neutral |
+| -60 to -20 | fear |
+| < -60 | extreme-fear |
+
+### Parameters
+
+| Name | Type | Description |
+|------|------|-------------|
+| `provider` | `AbstractDataProvider` | Your data provider |
+
+### Returns
+
+A dictionary with:
+- `score` — -100 to +100 sentiment score
+- `label` — sentiment label
+- `components` — breakdown of each indicator
+
+### Usage
+
+**Python API:**
+```python
+result = await compute_market_sentiment(provider)
+```
+
+**Agent tool:**
+```
+compute_market_sentiment()
+```
+
+---
+
+## Summary
+
+These market breadth tools help you understand the overall health of the market:
+
+- **count_distribution_days** — detect institutional selling pressure
+- **detect_follow_through_day** — confirm new uptrends
+- **compute_percent_above_ma** — measure market participation
+- **compute_advance_decline** — track advancing vs. declining stocks
+- **compute_new_highs_lows** — count new 52-week highs/lows
+- **compute_breadth_thrust** — detect broad, forceful moves
+- **detect_market_regime** — composite regime score with exposure guidance
+- **compute_market_sentiment** — fear & greed sentiment score
+
+Use these tools together to get a complete picture of market health. A market with strong breadth (high % above MAs, rising A/D line, more new highs than lows) is healthy and sustainable. A market with weak breadth (low % above MAs, falling A/D line, more new lows than highs) is fragile and at risk of reversal.

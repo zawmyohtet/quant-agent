@@ -1,351 +1,392 @@
 # Sector Analysis Tools
 
-`quantagent/tools/sector_analysis.py` — fast-path sector and industry analysis
-built on the 11 SPDR sector ETFs (`quantagent.tools.universe.SECTOR_ETFS`). Every
-function that only needs sector-level data works from a single batch download
-of 2 years of daily OHLCV for those 11 ETFs (`_fetch_sector_frames`), so it runs
-on the free tier without warming the universe-scale `BreadthStore`. Only
-`get_industry_performance` drops to individual-stock data, because industry
-detail does not exist at the ETF level.
+`quantagent/tools/sector_analysis.py`
 
-Sector-to-ETF mapping (`SECTOR_ETFS`): Technology→XLK, Healthcare→XLV,
-Financials→XLF, Consumer Discretionary→XLY, Consumer Staples→XLP, Energy→XLE,
-Industrials→XLI, Materials→XLB, Real Estate→XLRE, Utilities→XLU, Communication
-Services→XLC.
+Tools for analyzing market sectors — which parts of the economy are leading, which are lagging, and how money is flowing between them. These tools use the 11 SPDR sector ETFs as proxies for each sector, making them fast and efficient to run.
 
-Cyclical vs. defensive grouping used by rotation detection:
-- `CYCLICAL_SECTORS`: Technology, Consumer Discretionary, Financials,
-  Industrials, Materials, Communication Services, Energy, Real Estate
-- `DEFENSIVE_SECTORS`: Consumer Staples, Utilities, Healthcare
-
-Common period-to-trading-days mapping (`_PERIOD_DAYS`) used across these tools:
-`1d`→1, `1w`→5, `1m`→21, `3m`→63, `6m`→126, `1y`→252 sessions.
+The 11 GICS sectors and their ETFs:
+- Technology (XLK), Healthcare (XLV), Financials (XLF)
+- Consumer Discretionary (XLY), Consumer Staples (XLP)
+- Energy (XLE), Industrials (XLI), Materials (XLB)
+- Real Estate (XLRE), Utilities (XLU), Communication Services (XLC)
 
 ---
 
 ## get_sector_performance_ranked
 
-**Agent-facing tool name:** `get_sector_performance_ranked`
+**Agent tool:** `get_sector_performance_ranked`
 
-**Purpose:** Ranks all 11 GICS sectors by trailing performance across one or
-more timeframes (1d through 1y), so an agent or user can see at a glance which
-sectors are leading or lagging the market right now.
+Ranks all 11 sectors by their performance across multiple timeframes.
 
-**Why built this way:** Uses the 11 sector SPDR ETFs as liquid, free-tier proxies
-for each GICS sector instead of computing a true cap-weighted sector index from
-constituents — this keeps the whole function to a single batch OHLCV fetch
-(2 years, 11 symbols) with no universe warm-up. Ranking is done by *average
-rank across periods* rather than by any single period's return, so a sector
-that is consistently strong across multiple timeframes outranks one that is
-merely a short-term spike. Sectors with missing/empty data are silently
-skipped rather than erroring.
+### What It Does
 
-**Math:**
-- Period return: `_period_return(close, days) = close[-1] / close[-(days+1)] - 1`,
-  rounded to 4 decimals; returns `None` if the series has `days` bars or fewer
-  (guarantees the [-(days+1)] index is valid).
-- Per-period rank: for each requested period column, `DataFrame.rank(ascending=False)`
-  (rank 1 = best/highest return in that period; ties resolved by pandas'
-  default averaging method).
-- Overall rank: `avg_rank = mean of per-period ranks (row-wise)`, then
-  `rank = avg_rank.rank(method="first")` cast to int — rank 1 is the sector
-  with the best (lowest) average per-period rank; `method="first"` breaks ties
-  by row order so ranks are always unique integers 1..N.
-- Final rows are sorted ascending by `rank`.
+Shows you which sectors are hot and which are not. It ranks sectors by their average performance across multiple timeframes (1 day, 1 week, 1 month, 3 months, 6 months, 1 year), giving you a comprehensive view of sector leadership.
 
-**Usage:**
-- Parameters: `provider` (data provider, injected by the agent registry),
-  `periods: list[str] | None` — subset of `1d, 1w, 1m, 3m, 6m, 1y`; defaults to
-  all six.
-- Returns: `pd.DataFrame` with columns `sector`, `etf`, one column per requested
-  period (decimal return, e.g. `0.0231` = +2.31%), and `rank` (int, 1 = best).
-  Empty DataFrame if no sector data is available.
-- Agent tool signature: `get_sector_performance_ranked(periods: str = "")` where
-  `periods` is a comma-separated string (e.g. `"1m,3m,6m"`); empty string uses
-  all six periods. Returns the DataFrame as a JSON records string.
-- Example: `get_sector_performance_ranked(periods="1m,3m")` → rows like
-  `{"sector": "Technology", "etf": "XLK", "1m": 0.0512, "3m": 0.1183, "rank": 1}`.
+### How It Works
+
+1. **Download sector data** — fetches 2 years of price history for all 11 sector ETFs in one batch
+2. **Calculate returns** — computes percentage returns for each timeframe
+3. **Rank per timeframe** — ranks sectors within each timeframe (rank 1 = best performer)
+4. **Average the ranks** — computes the average rank across all timeframes
+5. **Final ranking** — ranks sectors by their average rank
+
+**Why average ranks?** A sector that's consistently good across multiple timeframes is more reliable than one that had a great month but is terrible otherwise.
+
+### Parameters
+
+| Name | Type | Default | Description |
+|------|------|---------|-------------|
+| `provider` | `AbstractDataProvider` | required | Your data provider |
+| `periods` | `list[str] \| None` | `None` | Timeframes to analyze (defaults to all six: 1d, 1w, 1m, 3m, 6m, 1y) |
+
+### Returns
+
+A DataFrame with columns:
+- `sector` — sector name
+- `etf` — ETF ticker
+- One column per timeframe (e.g. `1d`, `1w`, `1m`, etc.) showing returns as decimals
+- `rank` — overall rank (1 = best)
+
+### Usage
+
+**Python API:**
+```python
+df = await get_sector_performance_ranked(provider, periods=["1m", "3m", "6m"])
+```
+
+**Agent tool:**
+```
+get_sector_performance_ranked(periods="1m,3m,6m")
+```
+
+The agent tool takes periods as a comma-separated string. An empty string uses all six periods.
 
 ---
 
 ## get_industry_performance
 
-**Agent-facing tool name:** `get_industry_performance`
+**Agent tool:** `get_industry_performance`
 
-**Purpose:** Drills one level below sector into GICS industries (e.g. within
-"Technology": Semiconductors, Software, IT Services), ranking industries within
-a chosen sector by 1-month and 3-month average returns.
+Drills down into a specific sector to see which industries within it are performing best.
 
-**Why built this way:** This is the one function in the module that cannot stay
-on the fast ETF-only path, because industry-level SPDR ETFs don't cover the
-full universe — it has to classify individual stocks (default: S&P 500
-constituents, via `screener._fetch_universe_tickers("sp500")`) into
-sector/industry using the provider's classification endpoint, then fetch OHLCV
-per stock. Classification is delegated to `classify_symbols`, which caches each
-symbol's sector/industry for 7 days so repeat calls (even for a different
-sector) are fast after the first cold run. The docstring explicitly warns a
-cold cache can take minutes on free-tier providers because it classifies the
-*entire* passed-in universe up front, not just the target sector.
+### What It Does
 
-**Math:**
-- Sector filter: keeps symbols where `classification["sector"].lower() == sector.lower()`
-  and `industry` is present.
-- Per-symbol returns: `_period_return` for `1m` (21 sessions) and `3m` (63
-  sessions), same formula as above.
-- Industry aggregation (`_aggregate_industry_returns`): groups by `industry`,
-  computing `n_stocks` (count), and the **mean** of each stock's `1m` and `3m`
-  return within that industry group, rounded to 4 decimals.
-- Rank: `rank = grouped["3m"].rank(ascending=False, method="first")` — ranked
-  purely on 3-month average return, not 1-month, with ties broken by row order.
-  Sorted ascending by rank.
+Sectors are broad (Technology includes everything from Apple to Nvidia to Microsoft). Industries are more specific (Semiconductors, Software, IT Services, etc.). This tool shows you which industries within a sector are leading.
 
-**Usage:**
-- Parameters: `provider`, `sector: str` (provider taxonomy name, e.g.
-  "Technology", "Healthcare", "Financials" — must match the classification
-  source's naming), `symbols: list[str] | None` (universe to classify; defaults
-  to S&P 500).
-- Returns: `pd.DataFrame` with columns `industry`, `n_stocks`, `1m`, `3m`,
-  `rank`. Empty DataFrame if no members found in that sector.
-- Agent tool signature: `get_industry_performance(sector: str)` — no `symbols`
-  override exposed to the agent (always classifies the S&P 500). Uses an
-  extended timeout (`_LONG_TOOL_TIMEOUT_SEC`) because of the classification
-  cost. Returns `"No industry data found for sector: {sector}"` when empty.
-- Example: `get_industry_performance(sector="Technology")` → rows like
-  `{"industry": "Semiconductors", "n_stocks": 34, "1m": 0.041, "3m": 0.089, "rank": 1}`.
+### How It Works
+
+1. **Classify stocks** — assigns each stock in the universe to a sector and industry
+2. **Filter by sector** — keeps only stocks in the requested sector
+3. **Calculate returns** — computes 1-month and 3-month returns for each stock
+4. **Aggregate by industry** — averages returns within each industry
+5. **Rank** — ranks industries by 3-month return
+
+**Slow on first run:** This tool needs to classify every stock in the universe (typically 500+ stocks), which can take minutes on a cold cache. After that, classifications are cached for 7 days, so subsequent runs are fast.
+
+### Parameters
+
+| Name | Type | Default | Description |
+|------|------|---------|-------------|
+| `provider` | `AbstractDataProvider` | required | Your data provider |
+| `sector` | `str` | required | Sector name (e.g. "Technology", "Healthcare") |
+| `symbols` | `list[str] \| None` | `None` | Universe to analyze (defaults to S&P 500) |
+
+### Returns
+
+A DataFrame with columns:
+- `industry` — industry name
+- `n_stocks` — number of stocks in that industry
+- `1m` — 1-month average return
+- `3m` — 3-month average return
+- `rank` — rank by 3-month return (1 = best)
+
+### Usage
+
+**Python API:**
+```python
+df = await get_industry_performance(provider, sector="Technology")
+```
+
+**Agent tool:**
+```
+get_industry_performance(sector="Technology")
+```
+
+The agent tool always analyzes the S&P 500. It uses an extended timeout due to the classification cost.
 
 ---
 
 ## classify_symbols
 
-**Agent-facing tool name:** Not exposed as an agent tool (internal helper —
-confirmed absent from `quantagent/agent/tools_registry.py`'s imports and tool
-list; it is only called internally by `get_industry_performance` and by
-`generate_market_heatmap` in `market_overview.py`).
+**Agent tool:** Not exposed to agent (internal helper)
 
-**Purpose:** Classifies a list of symbols into `{sector, industry}` via the
-data provider, with a 7-day cache and bounded concurrency, so downstream
-industry/sector grouping doesn't need to hit the provider once per symbol on
-every call.
+Assigns stocks to sectors and industries using the data provider's classification endpoint.
 
-**Why built this way:** Classification calls are typically the slowest/most
-rate-limited provider endpoint, so results are cached per-symbol for 7 days
-(`_CLASSIFICATION_TTL_SEC = 7 * 24 * 3600`) using `DataCache`, keyed
-`classification:{symbol}`. Concurrency is capped at 8 simultaneous in-flight
-requests via `asyncio.Semaphore(8)` to stay within free-tier rate limits while
-still parallelizing the cold-cache case. Progress is reported every 25 newly
-fetched (not cached) symbols via `report_progress`, since a cold run over
-hundreds of symbols can otherwise look hung. Per-symbol classification failures
-are caught and logged as warnings rather than aborting the whole batch — a few
-missing symbols degrade gracefully rather than failing the entire call.
+### What It Does
 
-**Math:** None — this is data classification/caching plumbing, not a
-quantitative computation.
+Takes a list of stock tickers and returns their sector and industry classifications. This is used internally by other tools that need to group stocks by sector or industry.
 
-**Usage:**
-- Parameters: `provider`, `symbols: list[str]`.
-- Returns: `dict[str, dict]` mapping symbol to its classification dict (at
-  least `sector` and `industry` keys, provider-dependent); symbols whose
-  classification failed are simply absent from the result.
-- Example (internal call): `classify_symbols(provider, ["AAPL", "MSFT", "XOM"])`
-  → `{"AAPL": {"sector": "Technology", "industry": "Consumer Electronics"}, ...}`.
+### How It Works
+
+1. **Check cache** — looks up each symbol in the cache (7-day TTL)
+2. **Fetch missing** — for symbols not in cache, calls the provider's classification endpoint
+3. **Cache results** — stores new classifications in the cache
+4. **Return mappings** — returns a dictionary mapping symbol → {sector, industry}
+
+**Bounded concurrency:** Limits to 8 simultaneous requests to avoid hitting rate limits. Progress is reported every 25 symbols so you know it's still working.
+
+### Parameters
+
+| Name | Type | Description |
+|------|------|-------------|
+| `provider` | `AbstractDataProvider` | Your data provider |
+| `symbols` | `list[str]` | List of stock tickers |
+
+### Returns
+
+A dictionary mapping symbol → classification dict:
+```json
+{
+  "AAPL": {"sector": "Technology", "industry": "Consumer Electronics"},
+  "MSFT": {"sector": "Technology", "industry": "Software"},
+  "XOM": {"sector": "Energy", "industry": "Oil & Gas"}
+}
+```
+
+### Usage
+
+```python
+classifications = await classify_symbols(provider, ["AAPL", "MSFT", "XOM"])
+```
 
 ---
 
 ## compute_sector_relative_strength
 
-**Agent-facing tool name:** `compute_sector_relative_strength`
+**Agent tool:** `compute_sector_relative_strength`
 
-**Purpose:** Measures how much each sector is outperforming or underperforming
-a benchmark (default SPY) over a chosen window, and whether that
-outperformance is currently improving or fading.
+Measures how much each sector is outperforming or underperforming a benchmark, and whether that outperformance is improving or fading.
 
-**Why built this way:** Relative strength (RS) is computed as a simple ratio of
-cumulative returns over the window rather than a full RS *line* (a
-continuously plotted price ratio series) — this keeps the calculation O(1) per
-sector per call instead of maintaining/plotting a time series, which fits the
-tool's "single JSON-friendly snapshot" design. Benchmark data is fetched in the
-same batch call as the sector ETFs (`_fetch_sector_frames(provider, extra=[benchmark])`)
-so there's no extra round trip. Trend classification reuses the same
-`_relative_strength` function twice (now vs. 21 sessions ago) instead of a
-separate momentum calculation, keeping the "trend" signal consistent with the
-"ratio" signal.
+### What It Does
 
-**Math:**
-- RS ratio (`_relative_strength`): 
-  `sym_ret = close[-1] / close[-(days+1)]`,
-  `bench_ret = bench[-1] / bench[-(days+1)]`,
-  `rs_ratio = round(sym_ret / bench_ret, 4)`.
-  This is a ratio of *gross* returns (price relatives, e.g. 1.05 for +5%), not
-  a difference of percentage returns. `rs_ratio > 1` means the sector
-  outperformed the benchmark over the window; `< 1` means it underperformed.
-  Returns `None` if either series has ≤ `days` bars, or if `bench_ret == 0`
-  (avoids division by zero).
-- Trend (`_rs_trend`): recomputes RS on data truncated 21 sessions earlier
-  (`close.iloc[:-21]`, `bench.iloc[:-21]`) to get `rs_prev`, then
-  `delta = rs_now - rs_prev`. `delta > 0.01` → `"improving"`; `delta < -0.01` →
-  `"deteriorating"`; otherwise `"neutral"`. Note this 21-session comparison
-  offset is fixed regardless of the chosen RS `period`.
-- Rank: `rs_rank = rs_ratio.rank(ascending=False, method="first")` — rank 1 is
-  the highest RS ratio; sorted ascending by `rs_rank`.
+Compares each sector's performance to a benchmark (usually SPY) and tells you:
+- **RS ratio** — is the sector beating the benchmark? (>1 = outperforming, <1 = underperforming)
+- **Trend** — is the outperformance getting better or worse?
 
-**Usage:**
-- Parameters: `provider`, `sectors: list[str] | None` (default: all 11),
-  `benchmark: str = "SPY"`, `period: str = "3m"` (one of `1w, 1m, 3m, 6m, 1y`
-  — note `1d` is not a valid RS period; only the keys with at least a several
-  day lookback are meaningful here).
-- Returns: `pd.DataFrame` with columns `sector`, `etf`, `rs_ratio`
-  (>1 = outperforming), `trend` (`improving`/`deteriorating`/`neutral`),
-  `rs_rank`. Empty if benchmark data or all sector data is missing.
-- Agent tool signature: `compute_sector_relative_strength(benchmark: str = "SPY", period: str = "3m")`
-  — the `sectors` filter is not exposed to the agent (always all 11 sectors).
-- Example: `compute_sector_relative_strength(benchmark="SPY", period="1m")` →
-  rows like `{"sector": "Energy", "etf": "XLE", "rs_ratio": 1.0421, "trend": "improving", "rs_rank": 1}`.
+### How It Works
+
+1. **Calculate returns** — computes sector and benchmark returns over the chosen period
+2. **Compute RS ratio** — sector return / benchmark return
+3. **Determine trend** — compares current RS to RS from 21 sessions ago
+   - If RS improved by >0.01 → "improving"
+   - If RS declined by >0.01 → "deteriorating"
+   - Otherwise → "neutral"
+4. **Rank** — ranks sectors by RS ratio
+
+### Parameters
+
+| Name | Type | Default | Description |
+|------|------|---------|-------------|
+| `provider` | `AbstractDataProvider` | required | Your data provider |
+| `sectors` | `list[str] \| None` | `None` | Sectors to analyze (defaults to all 11) |
+| `benchmark` | `str` | `"SPY"` | Benchmark symbol |
+| `period` | `str` | `"3m"` | Timeframe (1w, 1m, 3m, 6m, 1y) |
+
+### Returns
+
+A DataFrame with columns:
+- `sector` — sector name
+- `etf` — ETF ticker
+- `rs_ratio` — relative strength ratio (>1 = outperforming)
+- `trend` — "improving", "deteriorating", or "neutral"
+- `rs_rank` — rank by RS ratio (1 = strongest)
+
+### Usage
+
+**Python API:**
+```python
+df = await compute_sector_relative_strength(provider, benchmark="SPY", period="3m")
+```
+
+**Agent tool:**
+```
+compute_sector_relative_strength(benchmark="SPY", period="3m")
+```
+
+The agent tool always analyzes all 11 sectors.
 
 ---
 
 ## detect_sector_rotation
 
-**Agent-facing tool name:** `detect_sector_rotation`
+**Agent tool:** `detect_sector_rotation`
 
-**Purpose:** Identifies which sectors are currently leading/lagging and
-improving/deteriorating in relative strength, derives an overall risk-on vs.
-risk-off rotation signal, and estimates which phase of the economic cycle the
-market is behaving like.
+Identifies which sectors are leading/lagging and improving/deteriorating, and estimates which phase of the economic cycle the market is in.
 
-**Why built this way:** Rather than a single "rotation score," the function
-composes several independent signals from the same underlying RS momentum data
-(`_sector_rs_stats`) so the caller gets a fuller picture: which 3 sectors are
-strongest/weakest by absolute RS (`leading_sectors`/`lagging_sectors`), which
-sectors' RS is accelerating/decelerating regardless of absolute rank
-(`improving_sectors`/`deteriorating_sectors`), a binary macro read
-(`rotation_signal`) built from the pre-defined cyclical/defensive sector sets in
-`quantagent.tools.universe`, and a `cycle_phase` guess built from a hand-coded
-lookup table of which sectors historically lead each phase
-(`_CYCLE_PHASE_LEADERS`) — this table is an explicit historical heuristic, not
-learned from data, and is documented in-code as such ("Sectors that
-historically lead each economic cycle phase"). All of it derives from one
-shared batch fetch of sector + SPY data, keeping this a fast-path,
-single-round-trip tool.
+### What It Does
 
-**Math:**
-- Per-sector stats (`_sector_rs_stats`): `half = max(lookback_days // 2, 1)`.
-  `rs = _relative_strength(close, bench_close, lookback_days)` (same ratio
-  formula as above, using the full `lookback_days` window). `rs_half_ago` is
-  the same RS ratio computed on data truncated `half` sessions from the end
-  (`close.iloc[:-half]`, `bench_close.iloc[:-half]`). `momentum = round(rs - rs_half_ago, 4)`
-  — the *change* in RS ratio over the first half of the lookback window versus
-  now. Sectors missing either value are dropped.
-- Leading/lagging: sectors sorted descending by `rs` (absolute RS ratio,
-  *not* momentum); `leading_sectors` = top 3, `lagging_sectors` = bottom 3
-  (`ranked[-3:]`).
-- Improving/deteriorating: `improving_sectors` = sectors with `momentum > 0.02`;
-  `deteriorating_sectors` = sectors with `momentum < -0.02`. These are
-  independent thresholds from leading/lagging and can overlap arbitrarily.
-- Rotation signal (`_rotation_signal`): `spread = mean(momentum for cyclical sectors) - mean(momentum for defensive sectors)`
-  using the fixed `CYCLICAL_SECTORS`/`DEFENSIVE_SECTORS` sets from
-  `quantagent.tools.universe`. `spread > 0.01` → `"risk-on"` (cyclicals gaining
-  RS momentum faster than defensives); `spread < -0.01` → `"risk-off"`;
-  otherwise `"neutral"`. Returns `"neutral"` if either group is empty (missing
-  data).
-- Cycle phase (`_cycle_phase`): builds `strong_sectors = set(leading_sectors) | set(improving_sectors)`,
-  then for each of the 4 phases in `_CYCLE_PHASE_LEADERS` counts
-  `len(strong_sectors & phase_leaders)`. Picks the phase with the highest
-  count (ties broken alphabetically by phase name via `max(scores, key=lambda p: (scores[p], p))`);
-  defaults to `"mid-expansion"` if no phase scores > 0.
-  Phase leader sets: `early-recovery` = {Financials, Consumer Discretionary,
-  Real Estate, Industrials}; `mid-expansion` = {Technology, Communication
-  Services, Industrials}; `late-cycle` = {Energy, Materials, Consumer Staples,
-  Healthcare}; `recession` = {Utilities, Consumer Staples, Healthcare}.
+Sector rotation is the tendency for different sectors to lead at different points in the economic cycle. This tool:
+- Identifies the top 3 and bottom 3 sectors by relative strength
+- Identifies sectors that are improving or deteriorating (momentum > 0.02 or < -0.02)
+- Determines if money is flowing into cyclicals (risk-on) or defensives (risk-off)
+- Estimates the current economic cycle phase
 
-**Usage:**
-- Parameters: `provider`, `lookback_days: int = 90` (RS window in calendar/
-  trading sessions; "half" of this is used for the momentum comparison).
-- Returns: `dict` with `leading_sectors`, `lagging_sectors`, `improving_sectors`,
-  `deteriorating_sectors` (lists of sector names), `rotation_signal`
-  (`risk-on`/`risk-off`/`neutral`), `cycle_phase` (`early-recovery`/
-  `mid-expansion`/`late-cycle`/`recession`), `as_of` (ISO date). Returns
-  `{"error": "benchmark data unavailable"}` or
-  `{"error": "sector data unavailable"}` on missing data instead of raising.
-- Agent tool signature: `detect_sector_rotation(lookback_days: int = 90)`.
-- Example: `detect_sector_rotation(lookback_days=90)` →
-  `{"leading_sectors": ["Energy", "Financials", "Industrials"], "lagging_sectors": [...], "rotation_signal": "risk-on", "cycle_phase": "early-recovery", "as_of": "2026-08-15"}`.
+### The Four Cycle Phases
+
+| Phase | Leading Sectors |
+|-------|----------------|
+| Early Recovery | Financials, Consumer Discretionary, Real Estate, Industrials |
+| Mid-Expansion | Technology, Communication Services, Industrials |
+| Late Cycle | Energy, Materials, Consumer Staples, Healthcare |
+| Recession | Utilities, Consumer Staples, Healthcare |
+
+### How It Works
+
+1. **Calculate momentum** — for each sector, computes the change in RS ratio over the lookback window
+2. **Identify leaders/laggards** — top 3 and bottom 3 by absolute RS
+3. **Identify improving/deteriorating** — sectors with momentum > 0.02 or < -0.02
+4. **Determine rotation signal** — compares cyclical vs. defensive momentum
+   - If cyclicals are gaining RS faster → "risk-on"
+   - If defensives are gaining RS faster → "risk-off"
+   - Otherwise → "neutral"
+5. **Estimate cycle phase** — matches leading/improving sectors to the phase they historically lead
+
+### Parameters
+
+| Name | Type | Default | Description |
+|------|------|---------|-------------|
+| `provider` | `AbstractDataProvider` | required | Your data provider |
+| `lookback_days` | `int` | `90` | Window for RS momentum calculation |
+
+### Returns
+
+A dictionary with:
+- `leading_sectors` — top 3 sectors by RS
+- `lagging_sectors` — bottom 3 sectors by RS
+- `improving_sectors` — sectors with positive momentum
+- `deteriorating_sectors` — sectors with negative momentum
+- `rotation_signal` — "risk-on", "risk-off", or "neutral"
+- `cycle_phase` — "early-recovery", "mid-expansion", "late-cycle", or "recession"
+- `as_of` — date of analysis
+
+### Usage
+
+**Python API:**
+```python
+result = await detect_sector_rotation(provider, lookback_days=90)
+```
+
+**Agent tool:**
+```
+detect_sector_rotation(lookback_days=90)
+```
 
 ---
 
 ## get_sector_etf_heatmap
 
-**Agent-facing tool name:** Not exposed as an agent tool. Confirmed by
-`grep -n "sector_analysis\|get_sector_etf_heatmap" quantagent/agent/tools_registry.py`:
-the module's import block only pulls in `compute_sector_relative_strength`,
-`detect_sector_rotation`, `get_industry_performance`, and
-`get_sector_performance_ranked` from `quantagent.tools.sector_analysis` — there
-is no `_get_sector_etf_heatmap` wrapper function, no `@tool` decoration, and no
-entry in the `build_tool_registry` list. **This function is not agent-callable
-today**; it would need to be imported, wrapped in a `_bind_provider(...)` entry,
-and added to the registry list to become available to the agent.
+**Agent tool:** Not exposed to agent
 
-**Purpose:** Produces a single-metric heatmap snapshot across all 11 sector
-ETFs — performance, volume-vs-average, volatility, or RSI — for visualization
-or programmatic use outside the agent's tool surface.
+Creates a heatmap snapshot of a chosen metric across all 11 sector ETFs.
 
-**Why built this way:** Reuses the same `_fetch_sector_frames` batch fetch as
-the other sector functions and a small pluggable metric-function dispatch table
-(`_HEATMAP_METRICS`) so adding a new heatmap metric only requires adding one
-function and one dict entry, not touching the control flow. Sectors with
-missing data are dropped rather than raising, matching the module's general
-degrade-gracefully pattern.
+### What It Does
 
-**Math (per `metric`):**
-- `performance`: 1-day return, i.e. `_period_return(close, 1)` = `close[-1]/close[-2] - 1`.
-- `volume`: `avg = mean(volume[-21:-1])` (prior 20 sessions, excluding today);
-  `value = volume[-1] / avg` if `avg > 0` else `None` — today's volume as a
-  multiple of the trailing 20-day average.
-- `volatility`: 21-session daily returns' standard deviation, annualized:
-  `std(pct_change()[-21:]) * sqrt(252)`; requires at least 5 non-null return
-  observations, else `None`.
-- `rsi`: RSI-14 via `compute_indicators(df, ["rsi_14"])`, taking the latest
-  `RSI_14` value; requires at least 15 rows of data.
-  All values rounded to 4 decimals where applicable.
-- Raises `ValueError` for any `metric` not in `{performance, volume, volatility, rsi}`.
+Generates a single-metric view of all sectors — performance, volume, volatility, or RSI — useful for visualization or programmatic analysis.
 
-**Usage:**
-- Parameters: `provider`, `metric: str = "performance"` (one of `performance`,
-  `volume`, `volatility`, `rsi`).
-- Returns: `dict` — `{metric, as_of (ISO date), sectors: {sector_name: {etf, value}}}`.
-- Example (direct Python call, not agent-invokable):
-  `await get_sector_etf_heatmap(provider, metric="volatility")` →
-  `{"metric": "volatility", "as_of": "2026-08-15", "sectors": {"Technology": {"etf": "XLK", "value": 0.1832}, ...}}`.
+### Available Metrics
+
+| Metric | What it measures |
+|--------|------------------|
+| `performance` | 1-day return |
+| `volume` | Volume ratio (today / 20-day avg) |
+| `volatility` | 21-day annualized volatility |
+| `rsi` | 14-day RSI |
+
+### Parameters
+
+| Name | Type | Default | Description |
+|------|------|---------|-------------|
+| `provider` | `AbstractDataProvider` | required | Your data provider |
+| `metric` | `str` | `"performance"` | Metric to display |
+
+### Returns
+
+A dictionary with:
+```json
+{
+  "metric": "performance",
+  "as_of": "2026-08-15",
+  "sectors": {
+    "Technology": {"etf": "XLK", "value": 0.0123},
+    "Healthcare": {"etf": "XLV", "value": -0.0045},
+    ...
+  }
+}
+```
+
+### Usage
+
+```python
+heatmap = await get_sector_etf_heatmap(provider, metric="volatility")
+```
 
 ---
 
 ## compute_sector_correlation
 
-**Agent-facing tool name:** Not exposed as an agent tool. Same grep confirms
-`compute_sector_correlation` is never imported into
-`quantagent/agent/tools_registry.py` and has no wrapper or registry entry.
-**Not agent-callable today.**
+**Agent tool:** Not exposed to agent
 
-**Purpose:** Produces a pairwise correlation matrix of daily returns across all
-11 sector ETFs over a chosen lookback window, useful for diversification/
-concentration analysis outside the agent surface.
+Computes a correlation matrix showing how the 11 sectors move together.
 
-**Why built this way:** Built on the same shared sector-ETF batch fetch as the
-rest of the module; uses pandas' built-in `DataFrame.corr()` on daily percentage
-returns rather than a custom correlation routine, keeping the implementation
-minimal. Sectors with missing/empty frames are simply excluded from the closes
-dict comprehension rather than raising.
+### What It Does
 
-**Math:**
-- Closes are sliced to the trailing `days + 1` bars (`_PERIOD_DAYS[period]`),
-  turned into daily percentage returns via `pct_change().dropna()`, and
-  correlated with pandas' Pearson `DataFrame.corr()`, rounded to 4 decimals.
-- Standard Pearson correlation coefficient — no lag/lead adjustment, no
-  shrinkage.
+Shows which sectors tend to move in the same direction (positive correlation) or opposite directions (negative correlation). This is useful for:
+- Portfolio diversification (you want low correlation between holdings)
+- Understanding sector relationships
 
-**Usage:**
-- Parameters: `provider`, `period: str = "6m"` (one of `1m, 3m, 6m, 1y`).
-- Returns: `pd.DataFrame` indexed and columned by sector name, symmetric,
-  diagonal = 1.0, off-diagonal in `[-1, 1]`. Empty DataFrame if no sector data.
-- Example (direct Python call, not agent-invokable):
-  `await compute_sector_correlation(provider, period="3m")` → a
-  11x11 DataFrame, e.g. `df.loc["Technology", "Communication Services"] == 0.87`.
+### How It Works
+
+1. **Download sector data** — fetches price history for all 11 sector ETFs
+2. **Calculate returns** — computes daily percentage returns
+3. **Compute correlations** — calculates Pearson correlation between each pair of sectors
+
+### Parameters
+
+| Name | Type | Default | Description |
+|------|------|---------|-------------|
+| `provider` | `AbstractDataProvider` | required | Your data provider |
+| `period` | `str` | `"6m"` | Timeframe (1m, 3m, 6m, 1y) |
+
+### Returns
+
+An 11×11 correlation matrix (DataFrame) where:
+- Diagonal = 1.0 (each sector correlates perfectly with itself)
+- Off-diagonal = correlation between sectors (-1 to +1)
+
+### Usage
+
+```python
+corr_matrix = await compute_sector_correlation(provider, period="3m")
+```
+
+---
+
+## Summary
+
+These sector analysis tools help you understand where money is flowing in the market:
+
+- **get_sector_performance_ranked** — rank sectors by performance
+- **get_industry_performance** — drill down into industries within a sector
+- **classify_symbols** — assign stocks to sectors and industries (internal)
+- **compute_sector_relative_strength** — compare sectors to a benchmark
+- **detect_sector_rotation** — identify rotation patterns and cycle phase
+- **get_sector_etf_heatmap** — single-metric sector heatmap (internal)
+- **compute_sector_correlation** — sector correlation matrix (internal)
+
+Use these tools to:
+- Identify which sectors are leading the market
+- Understand if money is flowing into risk-on (cyclicals) or risk-off (defensives) sectors
+- Estimate where we are in the economic cycle
+- Find specific industries within a sector that are outperforming
+
+Remember: sectors rotate in a somewhat predictable pattern through the economic cycle. Early in a recovery, financials and consumer discretionary tend to lead. Late in the cycle, energy and materials take over. In a recession, defensives like utilities and consumer staples hold up best.

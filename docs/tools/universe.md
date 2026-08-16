@@ -1,255 +1,301 @@
 # Universe Tools
 
-Source: `quantagent/tools/universe.py`
+`quantagent/tools/universe.py`
 
-This module defines the named symbol universes that every screener and market-
-breadth tool bounds its search space with. There are two kinds:
-
-- **Built-in universes** (`sp500`, `nasdaq100`, `dow30`, `sector_etfs`) — scraped
-  from Wikipedia (for the index constituents) or hardcoded (for `sector_etfs`), and
-  disk-cached for 7 days under `~/.quantagent/cache/universes/`.
-- **Custom universes** — user-defined symbol lists saved as JSON files under
-  `~/.quantagent/universes/<name>.json`.
-
-Note: `russell2000` is intentionally not offered — there is no free, reliable
-constituent source for it; it can return with a paid data provider.
+Tools for managing stock universes — the lists of symbols that screeners and breadth tools operate on. A universe defines the "search space" for analysis.
 
 ---
 
-## builtin_universe_symbols
+## Built-in Universes
 
-**Agent-facing tool name:** Not exposed as an agent tool.
+QuantAgent comes with four pre-defined universes:
 
-**Purpose:** Resolves one of the built-in universe names (`sp500`, `nasdaq100`,
-`dow30`, `sector_etfs`) to its actual list of ticker symbols, doing the Wikipedia
-scrape (or returning the static sector-ETF map) and caching the result.
+| Universe | Description | Source |
+|----------|-------------|--------|
+| `sp500` | S&P 500 constituents | Wikipedia (cached 7 days) |
+| `nasdaq100` | Nasdaq 100 constituents | Wikipedia (cached 7 days) |
+| `dow30` | Dow Jones 30 constituents | Wikipedia (cached 7 days) |
+| `sector_etfs` | 11 GICS sector SPDR ETFs | Hardcoded list |
 
-**Why built this way:**
-- `sector_etfs` is answered instantly from the hardcoded `SECTOR_ETFS` dict (11
-  GICS sector SPDR ETF tickers: XLK, XLV, XLF, XLY, XLP, XLE, XLI, XLB, XLRE, XLU,
-  XLC) — no network call, no cache needed, since this list essentially never
-  changes.
-- `sp500`/`nasdaq100`/`dow30` constituents are scraped from their respective
-  Wikipedia pages (via `pandas.read_html` against the raw response text, extracting
-  the first table with a `Symbol`/`Ticker`/`" ticker"` column) since there's no free
-  structured API for index membership.
-- Results are cached to `~/.quantagent/cache/universes/<name>.json` for 7 days
-  (`_CONSTITUENT_TTL = timedelta(days=7)`) — index membership changes rarely, so a
-  week-old list is fine, and this avoids hammering Wikipedia on every screener call.
-- Degradation on scrape failure is deliberately graceful: if a fresh cache exists,
-  it's used; if the cache is stale but a re-scrape fails (network error, Wikipedia
-  table layout change, etc.), the function falls back to the **stale cache** rather
-  than raising — a week-old S&P 500 list is far more useful to a screener than a
-  hard failure. Only when there is no cache at all and the scrape also fails does
-  it return an empty list (callers like `_fetch_universe_tickers` treat that as "no
-  tickers found" and screens return an empty DataFrame rather than erroring).
-  Raises `ValueError` only for a genuinely unknown universe name.
+**Note:** `russell2000` is intentionally not offered — there's no free, reliable source for Russell 2000 constituents. It can be added with a paid data provider.
 
-**Math:** N/A — no scoring, pure data resolution.
+---
 
-**Usage:**
-- `name: str` — one of `sp500`, `nasdaq100`, `dow30`, `sector_etfs`.
-- Returns: `list[str]` of ticker symbols (for `sector_etfs`, ETF tickers, not
-  underlying company symbols).
-- Raises: `ValueError` for any name not in `{sector_etfs} ∪ _UNIVERSE_URLS.keys()`.
+## Custom Universes
 
-```python
-symbols = builtin_universe_symbols("sp500")   # e.g. ["MMM", "AOS", "ABT", ...]
-etfs = builtin_universe_symbols("sector_etfs")  # ["XLK", "XLV", "XLF", ...]
-```
+You can create your own custom universes — personal watchlists, thematic baskets, sector sub-slices, or any group of stocks you want to analyze together.
+
+Custom universes are stored as JSON files at `~/.quantagent/universes/<name>.json`.
 
 ---
 
 ## list_universes
 
-**Agent-facing tool name:** `list_universes_tool`
+**Agent tool:** `list_universes_tool`
 
-**Purpose:** Lists every universe name a caller can pass to a screener or
-breadth tool — the four built-ins plus whatever custom universes the user has
-saved — so the agent (or a user) can discover valid `universe=` values.
+Lists all available universes — the four built-ins plus any custom universes you've created.
 
-**Why built this way:** Built-ins are always listed first in a fixed order
-(`BUILTIN_UNIVERSES = ["sp500", "nasdaq100", "dow30", "sector_etfs"]`), then custom
-universes are appended alphabetically by scanning `~/.quantagent/universes/*.json`
-and taking each file's stem as the name — this keeps the well-known universes at
-the top regardless of how many custom ones a user has accumulated. The
-agent-facing wrapper doesn't just return the plain name list; it maps each name
-through `get_universe_metadata` so the LLM sees symbol counts and timestamps
-without a second round trip.
+### What It Does
 
-**Math:** N/A.
+Returns a list of universe names you can use with screeners and breadth tools. Built-in universes are listed first, followed by custom universes in alphabetical order.
 
-**Usage:**
-- No parameters.
-- Returns: `list[str]` — built-ins first, then custom universe names sorted
-  alphabetically.
+### Parameters
 
-Agent-facing wrapper (`list_universes_tool`) takes no arguments and returns a JSON
-array of metadata objects (see `get_universe_metadata` below), one per universe
-name.
+None.
 
+### Returns
+
+A list of universe names (strings).
+
+### Usage
+
+**Python API:**
 ```python
 names = list_universes()
-# ["sp500", "nasdaq100", "dow30", "sector_etfs", "my_watchlist"]
+# ["sp500", "nasdaq100", "dow30", "sector_etfs", "my_watchlist", "tech_stocks"]
+```
+
+**Agent tool:**
+```
+list_universes_tool()
 ```
 
 ---
 
 ## create_universe
 
-**Agent-facing tool name:** `create_universe_tool`
+**Agent tool:** `create_universe_tool`
 
-**Purpose:** Lets a user (or the agent, on the user's behalf) define a named,
-reusable custom watchlist/universe of tickers that any screener or breadth tool can
-then target via `universe=<name>` — e.g. a personal watchlist, a thematic basket,
-or a sector sub-slice not covered by the built-ins.
+Creates a new custom universe (watchlist) or updates an existing one.
 
-**Why built this way:**
-- Universe names are validated against `_NAME_PATTERN = ^[a-z0-9_\-]{1,64}$` (1-64
-  chars, lowercase letters/digits/underscore/hyphen only) and rejected if they
-  collide with a built-in name (`sp500`, `nasdaq100`, `dow30`, `sector_etfs`) —
-  this keeps custom universes filesystem-safe (used directly as `<name>.json`) and
-  prevents a user from accidentally shadowing/corrupting a built-in.
-- Symbols are normalized on write: stripped of whitespace, uppercased, and
-  deduplicated while preserving first-seen order (`dict.fromkeys(...)`) — so
-  `["aapl", "MSFT", "aapl"]` becomes `["AAPL", "MSFT"]`. An all-empty/whitespace
-  symbol list raises `ValueError` rather than silently creating an empty universe
-  that would break every screener that tries to load it.
-- Calling this again with the same name **overwrites** the universe (this is the
-  documented update path — there's no separate `update_universe`), but it
-  preserves the original `created_at` timestamp by reading it from the existing
-  file before overwriting, only refreshing `updated_at`. This gives simple
-  create-or-update semantics with one function.
-- No hardcoded symbol-count cap — a custom universe can be as large or small as
-  the caller wants (bounded only by whatever the downstream screener's own
-  `max_symbols`/timeout handling can process).
+### What It Does
 
-**Math:** N/A.
+Takes a name and a list of symbols, validates them, and saves them as a custom universe. If a universe with that name already exists, it's overwritten (this is the update path).
 
-**Usage:**
-- `name: str` — must match `^[a-z0-9_\-]{1,64}$` and not be a built-in name.
-- `symbols: list[str]` — raw ticker list; whitespace-stripped, uppercased,
-  deduplicated on write.
-- Returns: `None`. Writes/overwrites
-  `~/.quantagent/universes/<name>.json` with
-  `{"name", "symbols", "created_at", "updated_at"}` (ISO-8601 UTC timestamps).
-- Raises: `ValueError` for an invalid name, a built-in name, or an empty/blank
-  symbol list.
+### How It Works
 
-Agent-facing wrapper (`create_universe_tool`) takes `symbols` as a comma-separated
-string (parsed via `_parse_comma_symbols`, which also strips/uppercases) and
-returns the new universe's metadata (via `get_universe_metadata`) as JSON.
+1. **Validate name** — must be 1-64 characters, lowercase letters/digits/underscore/hyphen only, and not collide with a built-in name
+2. **Normalize symbols** — strip whitespace, uppercase, deduplicate (preserving order)
+3. **Validate symbols** — must have at least one non-empty symbol
+4. **Save to disk** — writes JSON to `~/.quantagent/universes/<name>.json`
+5. **Preserve created_at** — if updating, keeps the original creation timestamp
 
+### Parameters
+
+| Name | Type | Description |
+|------|------|-------------|
+| `name` | `str` | Universe name (lowercase, 1-64 chars, no built-in names) |
+| `symbols` | `list[str]` | List of stock tickers |
+
+### Returns
+
+`None` (side effect: creates/updates the JSON file)
+
+### Usage
+
+**Python API:**
 ```python
-create_universe("my_watchlist", ["aapl", "msft", "googl", "aapl"])
-# -> ~/.quantagent/universes/my_watchlist.json:
-# {"name": "my_watchlist", "symbols": ["AAPL", "MSFT", "GOOGL"], ...}
+create_universe("my_watchlist", ["AAPL", "MSFT", "GOOGL"])
+# Creates ~/.quantagent/universes/my_watchlist.json
 ```
 
----
-
-## load_universe
-
-**Agent-facing tool name:** Not exposed as an agent tool directly (used
-internally by every screener/breadth tool that takes a `universe=` parameter, e.g.
-`screen_stocks`, `screen_by_technicals`, `screen_vcp_pattern`, etc., via
-`_fetch_universe_tickers`/`_universe_frames` wrappers in `screener.py`).
-
-**Purpose:** The single resolution point that turns any universe name — built-in
-or custom — into a concrete `list[str]` of ticker symbols for a screener to
-iterate over.
-
-**Why built this way:** Dispatches on whether `name` is one of the four built-ins
-(delegating to `builtin_universe_symbols`, which handles the Wikipedia-scrape +
-7-day cache dance) or otherwise treats it as a custom universe filename lookup
-under `~/.quantagent/universes/`. This gives every downstream tool a single,
-uniform way to go from a string to a symbol list without needing to know whether
-that universe is built-in or user-defined. Screener callers (see
-`_fetch_universe_tickers` in `screener.py`) catch any exception this raises and
-degrade to an empty ticker list (logged as a warning) rather than propagating the
-error — so a typo'd universe name results in "no stocks matched" rather than a
-crash.
-
-**Math:** N/A.
-
-**Usage:**
-- `name: str` — built-in or custom universe name.
-- Returns: `list[str]` of ticker symbols.
-- Raises: `ValueError` if `name` is not a built-in and no matching custom universe
-  file exists.
-
-```python
-tickers = load_universe("sp500")          # scraped + cached built-in
-tickers = load_universe("my_watchlist")   # custom, from disk
+**Agent tool:**
 ```
+create_universe_tool(name="my_watchlist", symbols="AAPL,MSFT,GOOGL")
+```
+
+The agent tool takes symbols as a comma-separated string.
+
+### Design Notes
+
+**Name validation:** The name pattern `^[a-z0-9_\-]{1,64}$` ensures the name is filesystem-safe (used directly as `<name>.json`) and prevents collisions with built-in universes.
+
+**Symbol normalization:** Symbols are uppercased and deduplicated, so `["aapl", "MSFT", "aapl"]` becomes `["AAPL", "MSFT"]`. This prevents duplicates and case-sensitivity issues.
+
+**Update semantics:** Calling `create_universe` with an existing name overwrites it but preserves the original `created_at` timestamp. There's no separate `update_universe` function — create is also update.
 
 ---
 
 ## delete_universe
 
-**Agent-facing tool name:** `delete_universe_tool`
+**Agent tool:** `delete_universe_tool`
 
-**Purpose:** Removes a previously created custom universe/watchlist that is no
-longer needed.
+Deletes a custom universe.
 
-**Why built this way:** Reuses the same name validation as `create_universe`
-(`_validate_name`) so built-in universes can never be deleted (attempting to
-raises `ValueError` before the filesystem is touched) — built-ins are considered
-part of the system, not user data. Raises rather than silently no-op-ing if the
-named custom universe doesn't exist, so a caller gets clear feedback on a typo
-rather than a false "success."
+### What It Does
 
-**Math:** N/A.
+Removes a custom universe's JSON file. Built-in universes cannot be deleted.
 
-**Usage:**
-- `name: str` — custom universe name (must not be a built-in).
-- Returns: `None`. Deletes `~/.quantagent/universes/<name>.json`.
-- Raises: `ValueError` for a built-in name or a universe that doesn't exist.
+### Parameters
 
-Agent-facing wrapper (`delete_universe_tool`) takes the same `name` parameter and
-returns a plain confirmation string, `"Universe '<name>' deleted."`.
+| Name | Type | Description |
+|------|------|-------------|
+| `name` | `str` | Universe name (must be custom, not built-in) |
 
+### Returns
+
+`None` (side effect: deletes the JSON file)
+
+### Usage
+
+**Python API:**
 ```python
 delete_universe("my_watchlist")
+# Deletes ~/.quantagent/universes/my_watchlist.json
 ```
+
+**Agent tool:**
+```
+delete_universe_tool(name="my_watchlist")
+```
+
+### Design Notes
+
+**Cannot delete built-ins:** Attempting to delete a built-in universe raises `ValueError`. Built-ins are considered part of the system, not user data.
+
+**Clear error on missing:** If the universe doesn't exist, raises `ValueError` rather than silently succeeding. This gives clear feedback on typos.
+
+---
+
+## load_universe
+
+**Agent tool:** Not exposed (internal)
+
+Resolves a universe name to a list of ticker symbols.
+
+### What It Does
+
+Takes a universe name (built-in or custom) and returns the list of ticker symbols. This is the function that screeners and breadth tools call to get the symbols to analyze.
+
+### How It Works
+
+1. **Check if built-in** — if the name is one of the four built-ins, delegates to `builtin_universe_symbols`
+2. **Otherwise, load custom** — reads the JSON file from `~/.quantagent/universes/<name>.json`
+3. **Return symbols** — returns the list of ticker symbols
+
+### Parameters
+
+| Name | Type | Description |
+|------|------|-------------|
+| `name` | `str` | Universe name (built-in or custom) |
+
+### Returns
+
+A list of ticker symbols (strings).
+
+### Usage
+
+```python
+tickers = load_universe("sp500")  # ~500 symbols
+tickers = load_universe("my_watchlist")  # your custom list
+```
+
+### Design Notes
+
+**Graceful failure:** If the universe doesn't exist or can't be loaded, raises `ValueError`. Screener callers catch this and degrade to an empty ticker list (logged as a warning) rather than crashing.
+
+**Caching for built-ins:** Built-in universes are cached for 7 days to avoid hammering Wikipedia on every call. The cache is stored at `~/.quantagent/cache/universes/<name>.json`.
+
+---
+
+## builtin_universe_symbols
+
+**Agent tool:** Not exposed (internal)
+
+Resolves a built-in universe name to its list of ticker symbols.
+
+### What It Does
+
+For `sector_etfs`, returns the hardcoded list of 11 sector ETFs. For `sp500`, `nasdaq100`, and `dow30`, scrapes the constituent list from Wikipedia and caches it for 7 days.
+
+### How It Works
+
+1. **Check cache** — if a fresh cache exists (< 7 days old), use it
+2. **Scrape Wikipedia** — if cache is stale or missing, scrape the Wikipedia page for the index
+3. **Extract symbols** — parse the HTML table to extract ticker symbols
+4. **Cache result** — save to `~/.quantagent/cache/universes/<name>.json`
+5. **Return symbols** — returns the list of tickers
+
+### Parameters
+
+| Name | Type | Description |
+|------|------|-------------|
+| `name` | `str` | Built-in universe name |
+
+### Returns
+
+A list of ticker symbols (strings).
+
+### Usage
+
+```python
+symbols = builtin_universe_symbols("sp500")  # ~500 symbols
+etfs = builtin_universe_symbols("sector_etfs")  # 11 ETFs
+```
+
+### Design Notes
+
+**Graceful degradation:** If the Wikipedia scrape fails (network error, layout change, etc.), falls back to the stale cache if one exists. Only returns an empty list if there's no cache at all and the scrape also fails. This ensures a week-old S&P 500 list is available even if Wikipedia is temporarily unreachable.
+
+**Caching:** Results are cached for 7 days because index membership changes rarely. This avoids hammering Wikipedia on every screener call.
+
+**Sector ETFs are instant:** `sector_etfs` returns a hardcoded list — no network call, no cache needed. The list essentially never changes.
 
 ---
 
 ## get_universe_metadata
 
-**Agent-facing tool name:** Not exposed as its own agent tool (used internally
-by `list_universes_tool` and `create_universe_tool` to build their JSON
-responses).
+**Agent tool:** Not exposed (internal)
 
-**Purpose:** Returns descriptive metadata about a universe — whether it's
-built-in or custom, how many symbols it contains, and (for custom universes) when
-it was created/last updated — without needing to load and inspect the full symbol
-list yourself.
+Returns metadata about a universe — type, symbol count, and timestamps.
 
-**Why built this way:** Built-in universes report only `name`, `type: "builtin"`,
-and `symbol_count` (computed by actually resolving `builtin_universe_symbols`,
-so the count reflects the live/cached scrape, not a hardcoded number — for
-`sector_etfs` this is always 11). Custom universes additionally surface
-`created_at`/`updated_at` from the JSON file, since that provenance only exists
-for user-created universes. This split lets the agent present built-ins and
-custom universes uniformly in a single listing (as `list_universes_tool` does)
-while still surfacing the extra provenance fields where they exist.
+### What It Does
 
-**Math:** N/A.
+Provides information about a universe without loading the full symbol list. Useful for displaying universe information in listings or UIs.
 
-**Usage:**
-- `name: str` — built-in or custom universe name.
-- Returns: `dict`.
-  - Built-in: `{"name": str, "type": "builtin", "symbol_count": int}`.
-  - Custom: `{"name": str, "type": "custom", "symbol_count": int, "created_at":
-    str | None, "updated_at": str | None}`.
-- Raises: `ValueError` if `name` is a custom name with no matching file.
+### Parameters
+
+| Name | Type | Description |
+|------|------|-------------|
+| `name` | `str` | Universe name (built-in or custom) |
+
+### Returns
+
+A dictionary with:
+- `name` — universe name
+- `type` — "builtin" or "custom"
+- `symbol_count` — number of symbols
+- `created_at` — creation timestamp (custom only)
+- `updated_at` — last update timestamp (custom only)
+
+### Usage
 
 ```python
-get_universe_metadata("sp500")
+metadata = get_universe_metadata("sp500")
 # {"name": "sp500", "type": "builtin", "symbol_count": 503}
 
-get_universe_metadata("my_watchlist")
+metadata = get_universe_metadata("my_watchlist")
 # {"name": "my_watchlist", "type": "custom", "symbol_count": 3,
 #  "created_at": "2026-08-01T12:00:00+00:00", "updated_at": "2026-08-01T12:00:00+00:00"}
 ```
+
+---
+
+## Summary
+
+These universe tools help you manage the lists of stocks you analyze:
+
+- **list_universes** — see what universes are available
+- **create_universe** — create or update a custom watchlist
+- **delete_universe** — remove a custom universe
+- **load_universe** — resolve a universe name to symbols (internal)
+- **builtin_universe_symbols** — resolve built-in universe to symbols (internal)
+- **get_universe_metadata** — get info about a universe (internal)
+
+Use these tools to:
+- Create personal watchlists for the stocks you follow
+- Build thematic baskets (e.g. "AI stocks", "renewable energy")
+- Define sector sub-slices not covered by the built-in sector ETFs
+- Manage the search space for your screens and breadth analysis
+
+Remember: the universe you choose determines what stocks are analyzed. A screen of the S&P 500 will only find stocks in the S&P 500. If you want to analyze a different set of stocks, create a custom universe first.

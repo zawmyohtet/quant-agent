@@ -1,425 +1,393 @@
 # Screener Tools
 
-Source: `quantagent/tools/screener.py`
+`quantagent/tools/screener.py`
 
-Fundamental screening fetches quotes/fundamentals per symbol with bounded concurrency
-(semaphore of 8 concurrent requests). Technical and pattern screens batch-download 1
-year of daily OHLCV for the whole universe up front and then evaluate every rule
-locally against the in-memory frames — no per-symbol network round trips once the
-batch download completes.
+Stock screening is the process of filtering a large universe of stocks (like the S&P 500) down to a smaller list that meets specific criteria. Instead of manually researching hundreds of companies, you define what you're looking for — cheap valuation, strong profitability, technical momentum, a specific chart pattern — and the screener does the work for you.
 
-Note: a Piotroski F-Score screen is intentionally not offered here — the current data
-providers don't supply the balance-sheet fields the F-Score needs, so it would
-silently score 0. It can return once a richer fundamentals provider (e.g. FMP) is
-wired in.
+QuantAgent offers several types of screens, each designed for a different investment approach:
+
+- **Fundamental screens** — filter by valuation, profitability, growth, and financial health metrics
+- **Technical screens** — filter by price action, momentum, and volume patterns
+- **Pattern screens** — filter for specific chart patterns (VCP, breakouts, oversold reversals)
+- **Combined screens** — apply both fundamental and technical filters together
 
 ---
 
-## screen_stocks
+## How Screening Works
 
-**Agent-facing tool name:** `screen_stocks_tool`
+### Data Fetching Strategy
 
-**Purpose:** Filters a universe of stocks (e.g. the S&P 500) down to those meeting
-a set of fundamental thresholds — valuation, profitability, leverage, growth,
-dividend yield, market cap, volume, and beta — and returns them sorted and ranked.
-This is the classic "find me cheap, profitable, growing companies" screen.
+The screener uses two different approaches depending on the type of screen:
 
-**Why built this way:**
-- The universe is resolved via `load_universe`, so the search space is bounded by
-  whichever named universe is passed in (`sp500`, `nasdaq100`, `dow30`,
-  `sector_etfs`, or a custom universe) — there is no hardcoded symbol cap; an
-  optional `max_symbols` lets a caller truncate the universe for a faster/cheaper
-  run, but the default is "the whole universe."
-- Per-symbol fundamentals + quote calls are fetched concurrently with a semaphore
-  capped at 8 in-flight requests, trading off provider rate limits against
-  throughput. Progress is reported every 25 completed symbols
-  (`_PROGRESS_EVERY = 25`).
-- A symbol that fails to fetch (`get_fundamentals`/`get_quote` raises) is silently
-  dropped from the result set rather than aborting the whole screen — screens are
-  best-effort over hundreds of symbols and a handful of provider hiccups shouldn't
-  fail the entire call. Failures are logged at `debug` level per-symbol and at
-  `warning` level if the universe itself fails to resolve.
-- Filtering criteria are looked up from a small operator dispatch table
-  (`_CRITERIA_DISPATCH`) mapping criterion keys to `(column, operator)` pairs, so
-  adding a new fundamental filter is a one-line table entry. Unknown criteria keys
-  are logged and ignored (the DataFrame passes through unfiltered for that key)
-  rather than raising, so a screen degrades gracefully instead of erroring out on a
-  typo.
+**Fundamental screens** fetch data for each stock individually — company financials, current quote, valuation ratios. Since these are separate API calls, the screener runs them in parallel with a limit of 8 concurrent requests. This keeps the screen fast while respecting your data provider's rate limits.
 
-**Math:** No composite scoring — this is pure boolean filtering, one comparison per
-criterion, all criteria AND-ed together (a row must pass every supplied criterion to
-survive). Supported keys and their comparisons:
+**Technical and pattern screens** work differently. They download price history for the entire universe in one batch operation, then evaluate all the technical criteria locally on your computer. This is much more efficient than making hundreds of individual API calls for each stock's price history.
 
-| Criteria key | Column | Comparison |
+### Graceful Failure
+
+When screening hundreds of stocks, some will inevitably fail to download — maybe the ticker symbol is invalid, maybe the data provider had a temporary error, maybe the stock was recently delisted. The screener handles this gracefully: it logs the error, skips that stock, and continues with the rest.
+
+This means a screen might return 495 results instead of 500 if 5 stocks failed to download. That's usually fine — you're looking for the best candidates, not a perfect list. If the entire universe fails to load (for example, if you misspelled the universe name), the screener returns an empty result.
+
+---
+
+## Fundamental Screening
+
+### screen_stocks
+
+**Agent tool:** `screen_stocks_tool`
+
+This is the classic "find me good companies" screen. You specify what you're looking for — cheap valuation, strong profitability, low debt, good growth — and the screener filters the universe down to stocks that meet all your criteria.
+
+#### How It Works
+
+1. **Resolve the universe** — the screener looks up all the stocks in the specified universe (S&P 500, Nasdaq 100, etc.). If you've specified a `max_symbols` limit, it truncates the list to that size.
+
+2. **Fetch data** — for each stock, the screener downloads the company's fundamentals (P/E ratio, return on equity, debt-to-equity, etc.) and current quote (price, market cap, volume). These calls run in parallel with a concurrency limit of 8.
+
+3. **Apply filters** — the screener applies each criterion you specified. All criteria are AND-ed together, meaning a stock must pass every single filter to make the final list.
+
+4. **Sort and limit** — the results are sorted by your chosen column (default: market cap, largest first) and truncated to your specified limit (default: 20 stocks).
+
+#### Available Criteria
+
+You can filter by any combination of the following metrics:
+
+| Criteria key | What it filters | Example |
 |---|---|---|
-| `pe_lt` / `pe_gt` | `pe_ratio` | `<` / `>` |
-| `pb_lt` / `pb_gt` | `pb_ratio` | `<` / `>` |
-| `roe_gt` | `roe` | `>` |
-| `roa_gt` | `roa` | `>` |
-| `debt_equity_lt` | `debt_equity` | `<` |
-| `mcap_gt` / `mcap_lt` (aliases `market_cap_gt` / `market_cap_lt`) | `market_cap` | `>` / `<` |
-| `volume_gt` | `volume` | `>` |
-| `dividend_yield_gt` | `dividend_yield` | `>` |
-| `revenue_growth_gt` | `revenue_growth` | `>` |
-| `eps_growth_gt` | `eps_growth` | `>` |
-| `beta_lt` | `beta` | `<` |
+| `pe_lt` / `pe_gt` | Price-to-earnings ratio | `pe_lt: 15` — P/E below 15 (cheap valuation) |
+| `pb_lt` / `pb_gt` | Price-to-book ratio | `pb_lt: 1.5` — P/B below 1.5 |
+| `roe_gt` | Return on equity | `roe_gt: 0.20` — ROE above 20% (profitable) |
+| `roa_gt` | Return on assets | `roa_gt: 0.10` — ROA above 10% |
+| `debt_equity_lt` | Debt-to-equity ratio | `debt_equity_lt: 1.0` — debt/equity below 1.0 (low leverage) |
+| `mcap_gt` / `mcap_lt` | Market capitalization | `mcap_gt: 10000000000` — market cap above $10B |
+| `market_cap_gt` / `market_cap_lt` | Market capitalization (alias) | Same as above |
+| `volume_gt` | Trading volume | `volume_gt: 1000000` — volume above 1M shares |
+| `dividend_yield_gt` | Dividend yield | `dividend_yield_gt: 0.02` — yield above 2% |
+| `revenue_growth_gt` | Revenue growth rate | `revenue_growth_gt: 0.10` — revenue growing 10%+ |
+| `eps_growth_gt` | Earnings per share growth | `eps_growth_gt: 0.15` — EPS growing 15%+ |
+| `beta_lt` | Beta (volatility vs. market) | `beta_lt: 1.2` — beta below 1.2 (less volatile) |
 
-After filtering, the result is sorted by `sort_by` (default `market_cap`, descending
-by default since `ascending=False`) and truncated to `limit` rows (default 20). No
-built-in thresholds are hardcoded — the caller supplies the actual numeric cutoffs.
+You can combine as many criteria as you want. For example, to find cheap, profitable, low-debt companies:
 
-**Usage:**
-- `provider: AbstractDataProvider` — market data provider.
-- `universe: str = "sp500"` — universe name to screen.
-- `criteria: dict | None = None` — filter dict using the keys above, e.g.
-  `{"pe_lt": 15, "roe_gt": 0.20}`.
-- `sort_by: str = "market_cap"` — column to sort by.
-- `ascending: bool = False` — sort direction.
-- `limit: int = 20` — max rows returned.
-- `max_symbols: int | None = None` — optional cap on symbols fetched (default: whole
-  universe).
-- Returns: `pd.DataFrame` with columns `symbol, name, pe_ratio, pb_ratio, roe, roa,
-  debt_equity, market_cap, volume, dividend_yield, revenue_growth, eps_growth, beta,
-  price` (empty DataFrame if the universe or all fetches fail).
-
-Agent-facing wrapper (`screen_stocks_tool`) accepts `criteria` as a JSON string
-(e.g. `'{"pe_lt": 15, "roe_gt": 0.20}'`), restricts the documented universe choices
-to `sp500`/`nasdaq100` in its docstring (though any resolvable universe works), runs
-under a 120s timeout, and returns `"No stocks matched the criteria."` when empty
-instead of an empty JSON array.
-
-```python
-df = await screen_stocks(
-    provider, universe="sp500",
-    criteria={"pe_lt": 15, "roe_gt": 0.20, "debt_equity_lt": 1.0},
-    sort_by="roe", ascending=False, limit=10,
-)
 ```
+criteria = {
+    "pe_lt": 15,
+    "roe_gt": 0.20,
+    "debt_equity_lt": 1.0
+}
+```
+
+This would return stocks with P/E below 15, ROE above 20%, and debt-to-equity below 1.0.
+
+#### Parameters
+
+| Name | Type | Default | Description |
+|------|------|---------|-------------|
+| `provider` | `AbstractDataProvider` | required | Market data provider |
+| `universe` | `str` | `"sp500"` | Universe to screen (sp500, nasdaq100, dow30, sector_etfs, or custom) |
+| `criteria` | `dict \| None` | `None` | Filter criteria (see table above) |
+| `sort_by` | `str` | `"market_cap"` | Column to sort results by |
+| `ascending` | `bool` | `False` | Sort direction (False = largest first) |
+| `limit` | `int` | `20` | Maximum number of results |
+| `max_symbols` | `int \| None` | `None` | Optional cap on symbols to fetch (for faster screens) |
+
+#### Returns
+
+A table with one row per stock that passed all filters. Columns include: `symbol`, `name`, `pe_ratio`, `pb_ratio`, `roe`, `roa`, `debt_equity`, `market_cap`, `volume`, `dividend_yield`, `revenue_growth`, `eps_growth`, `beta`, `price`.
+
+If no stocks match your criteria, or if the universe fails to load, the result is an empty table.
+
+#### Design Notes
+
+- **No built-in thresholds** — the screener doesn't impose any default filters. You specify exactly what you're looking for. This gives you full control, but it also means you need to know what reasonable thresholds look like (for example, a P/E below 15 is considered cheap, but a P/E below 5 might indicate a company in distress).
+
+- **Extensible criteria** — the screener uses a lookup table to map criteria keys to columns and operators. If you want to add a new filter (for example, filtering by current ratio), you just add one line to the table. Unknown criteria keys are logged as warnings and ignored, so a typo in a criteria key won't crash the screen — it just won't filter on that criterion.
+
+- **Progress reporting** — for large universes, the screener reports progress every 25 symbols so you know it's still working. Screening the S&P 500 typically takes 30–60 seconds depending on your data provider's speed.
 
 ---
 
-## screen_by_fundamentals
+### screen_by_fundamentals
 
-**Agent-facing tool name:** Not exposed as an agent tool.
+**Agent tool:** Not exposed to agent.
 
-**Purpose:** A thin convenience alias of `screen_stocks` with a larger default
-result set (50 rows instead of 20) — same fundamental filtering, just tuned for
-callers that want a broader list back.
+This is a thin wrapper around `screen_stocks` with a larger default result set (50 stocks instead of 20). It exists for internal use by other tools that want a broader list of candidates.
 
-**Why built this way:** It exists purely to give code-level callers (not the LLM
-agent) a friendlier default `limit` without duplicating any filtering logic — it
-delegates entirely to `screen_stocks` and passes through `sort_by`'s implicit
-default (`market_cap`) and `ascending`'s implicit default (`False`) unchanged. It is
-not imported into `quantagent/agent/tools_registry.py`, so the agent cannot call it
-directly; the agent instead uses `screen_stocks_tool` (backed by `screen_stocks`).
-
-**Math:** Identical to `screen_stocks` — see the table there.
-
-**Usage:**
-- `provider: AbstractDataProvider`
-- `criteria: dict[str, Any]` — required (no default), same keys as `screen_stocks`.
-- `universe: str = "sp500"`
-- `limit: int = 50`
-- Returns: same DataFrame shape as `screen_stocks`.
-
-```python
-df = await screen_by_fundamentals(
-    provider, criteria={"pe_lt": 20}, universe="nasdaq100", limit=50,
-)
-```
+The filtering logic is identical to `screen_stocks` — it just calls that function with `limit=50` instead of `limit=20`.
 
 ---
 
-## screen_by_technicals
+## Technical Screening
 
-**Agent-facing tool name:** `screen_technicals_tool`
+### screen_by_technicals
 
-**Purpose:** Filters a universe down to stocks matching a set of technical
-conditions — oversold/overbought RSI, MACD trend direction, price vs. moving
-average, volume expansion, Bollinger breakout, and trend strength (ADX) — computed
-from one year of daily price history. Useful for momentum/trend-following idea
-generation, or as the technical leg of a combined fundamental+technical screen.
+**Agent tool:** `screen_technicals_tool`
 
-**Why built this way:**
-- Unlike the fundamental screen (which fetches per-symbol), this batch-downloads
-  1-year daily OHLCV for the entire universe in one call
-  (`provider.get_batch_ohlcv(tickers, period="1y")`) and then evaluates all
-  criteria locally on each symbol's DataFrame — this amortizes network/API cost
-  across the whole universe instead of one round trip per indicator per symbol.
-- Accepts an optional pre-filtered `symbols` list so it can run against the
-  survivors of a prior fundamental screen (this is exactly how `screen_combined`
-  chains the two) instead of always re-scanning the full universe.
-- Each criterion evaluator returns `None` when there isn't enough history to
-  compute it (e.g. fewer than 35 bars for MACD, fewer than 200... actually fewer
-  than the required window) rather than `True`/`False` — a row is only kept if
-  every requested check evaluates to literal `True`; `None` (insufficient data) is
-  treated as a failure to be safe, silently excluding thinly-traded or newly-listed
-  symbols rather than guessing.
-- An unrecognized criteria key logs a warning and evaluates to `True` (i.e. does
-  not filter anything out) — a typo in a criteria key degrades to "no-op" for that
-  key rather than crashing the whole screen.
+This screen filters stocks based on technical indicators — momentum, trend, volume patterns. It's useful for finding stocks that are showing signs of strength (or weakness) based on their price action, independent of their fundamental valuation.
 
-**Math:** Each key maps to one indicator check:
+#### How It Works
 
-| Criteria key | Value type | Condition |
+1. **Batch download** — the screener downloads 1 year of daily price history for the entire universe in one operation. This is much more efficient than downloading each stock's history individually.
+
+2. **Evaluate criteria** — for each stock, the screener checks whether it meets all the technical criteria you specified. Each criterion is evaluated independently, and all criteria must be satisfied (AND logic).
+
+3. **Handle insufficient data** — some technical indicators require a minimum amount of history. For example, MACD needs at least 35 bars of data, and a 200-day moving average needs 200 bars. If a stock doesn't have enough history to compute an indicator, the screener treats that as a failure for that criterion (the stock doesn't pass). This conservatively excludes thinly-traded or newly-listed stocks rather than guessing.
+
+4. **Return results** — stocks that pass all criteria are returned, sorted by the order they were downloaded (no automatic sorting by a specific metric).
+
+#### Available Criteria
+
+| Criteria key | What it checks | Example |
 |---|---|---|
-| `rsi_lt` | float | Wilder RSI-14 (`wilder_rsi`, needs ≥15 bars) `<` value |
-| `rsi_gt` | float | Wilder RSI-14 `>` value |
-| `macd_bullish` | bool | MACD line (EMA12 − EMA26) `>` signal line (9-EMA of MACD line, needs ≥35 bars); result must equal the requested bool |
-| `price_above_sma` | int (period) | last close `>` SMA(period) |
-| `price_below_sma` | int (period) | last close `<` SMA(period) |
-| `volume_expansion` | float (min ratio) | last-day volume ÷ mean(volume, prior 20 days) `>=` value (needs ≥21 bars) |
-| `atr_breakout` | bool | last close `>` upper Bollinger band = mean(close, 20) + 2·std(close, 20) (needs ≥20 bars); result must equal the requested bool |
-| `adx_gt` | float | ADX-14 (via `compute_indicators(df, ["adx_14"])`, needs ≥30 bars) `>` value |
+| `rsi_lt` | RSI below a threshold (oversold) | `rsi_lt: 30` — RSI below 30 (oversold) |
+| `rsi_gt` | RSI above a threshold (overbought) | `rsi_gt: 70` — RSI above 70 (overbought) |
+| `macd_bullish` | MACD line above signal line (bullish momentum) | `macd_bullish: true` — MACD is bullish |
+| `price_above_sma` | Price above a simple moving average | `price_above_sma: 200` — price above 200-day SMA |
+| `price_below_sma` | Price below a simple moving average | `price_below_sma: 50` — price below 50-day SMA |
+| `volume_expansion` | Volume above a multiple of 20-day average | `volume_expansion: 1.5` — volume is 1.5x the 20-day average |
+| `atr_breakout` | Price above upper Bollinger band (breakout) | `atr_breakout: true` — price broke above upper band |
+| `adx_gt` | ADX above a threshold (strong trend) | `adx_gt: 25` — ADX above 25 (strong trend) |
 
-All requested checks must be `True` (strict AND) for a symbol to be included.
-Sorting is not applied within this function — rows are returned in the order the
-batch download produced them, truncated to `limit`.
+#### Understanding the Indicators
 
-**Usage:**
-- `provider: AbstractDataProvider`
-- `criteria: dict[str, Any]` — keys per the table above.
-- `universe: str = "sp500"` — ignored if `symbols` is given.
-- `symbols: list[str] | None = None` — explicit symbol list (e.g. pre-filtered by
-  fundamentals).
-- `limit: int = 50`
-- Returns: `pd.DataFrame` with columns `symbol, price, rsi, volume_ratio` (each
-  row's `rsi`/`volume_ratio` reflect the latest values regardless of which criteria
-  were requested).
+If you're not familiar with technical analysis, here's a brief explanation of each indicator:
 
-Agent-facing wrapper (`screen_technicals_tool`) takes `criteria` as a required JSON
-string (e.g. `'{"rsi_lt": 30, "price_above_sma": 200}'`), documents universes as
-`sp500`, `nasdaq100`, `sector_etfs`, or custom, defaults `limit=20`, runs under a
-120s timeout, and returns `"No stocks matched the technical criteria."` when empty.
+**RSI (Relative Strength Index)** measures how overbought or oversold a stock is on a scale of 0 to 100. Above 70 is considered overbought (the stock has gone up too fast and might pull back). Below 30 is considered oversold (the stock has fallen too fast and might bounce). RSI is a momentum oscillator that helps identify potential reversal points.
 
-```python
-df = await screen_by_technicals(
-    provider, criteria={"rsi_lt": 30, "macd_bullish": True}, universe="sp500", limit=20,
-)
-```
+**MACD (Moving Average Convergence Divergence)** compares two moving averages (12-day and 26-day EMAs) to identify momentum shifts. When the MACD line crosses above the signal line (a 9-day EMA of the MACD), that's a bullish signal — momentum is shifting upward. When it crosses below, that's bearish.
 
----
+**Simple Moving Average (SMA)** is the average price over a specified period. The 200-day SMA is widely watched as a long-term trend indicator — stocks above their 200-day SMA are considered to be in an uptrend, stocks below are in a downtrend. The 50-day SMA is a shorter-term trend indicator.
 
-## screen_combined
+**Volume expansion** measures whether today's trading volume is significantly above the recent average. High volume on an up day suggests strong buying interest (institutional money flowing in). High volume on a down day suggests strong selling pressure. Volume confirms price moves — a breakout on high volume is more convincing than a breakout on low volume.
 
-**Agent-facing tool name:** `screen_combined_tool`
+**Bollinger Bands** are a volatility-based envelope around the price. The upper band is typically set at 2 standard deviations above the 20-day moving average. When price breaks above the upper band, that's considered a breakout — the stock is moving strongly in an upward direction. Bollinger breakouts often signal the start of a strong trend.
 
-**Purpose:** Runs a fundamental screen and a technical screen together and returns
-only the stocks that pass both — e.g. "profitable, low-debt companies that are also
-currently oversold on RSI." This is the tool to reach for when a trade idea needs
-both a quality/valuation filter and a timing/momentum filter.
+**ADX (Average Directional Index)** measures the strength of a trend (not the direction). ADX above 25 indicates a strong trend (either up or down). ADX below 20 indicates a weak or non-existent trend (the stock is trading sideways). ADX helps you avoid trading in choppy, trendless markets.
 
-**Why built this way:** Fundamental filters are cheap (roughly one HTTP round trip
-per symbol) and typically narrow the universe a lot, so they run first with a high
-internal `limit=10_000` (effectively "no limit" for realistic universe sizes) to
-avoid truncating the candidate pool before the technical stage sees it. Only the
-fundamental survivors' symbols are then passed into `screen_by_technicals` (which
-batch-downloads OHLCV only for those symbols), so the expensive technical
-computation is done on the smallest possible symbol set — not the whole universe.
-If only one of the two criteria dicts is supplied, the function short-circuits and
-returns that single screen's results directly rather than requiring both.
+#### Parameters
 
-**Math:** No blended/weighted score — this is a strict intersection ("AND") of two
-independently-filtered sets, merged on `symbol`. The merged DataFrame carries the
-fundamental columns from `screen_stocks` plus `rsi` and `volume_ratio` from
-`screen_by_technicals` (merge is an inner join via `pd.DataFrame.merge`, which
-naturally keeps only symbols present in both). See `screen_stocks` and
-`screen_by_technicals` above for each stage's own filter math.
+| Name | Type | Default | Description |
+|------|------|---------|-------------|
+| `provider` | `AbstractDataProvider` | required | Market data provider |
+| `criteria` | `dict[str, Any]` | required | Technical criteria (see table above) |
+| `universe` | `str` | `"sp500"` | Universe to screen (ignored if `symbols` is provided) |
+| `symbols` | `list[str] \| None` | `None` | Explicit list of symbols to screen (e.g. pre-filtered by fundamentals) |
+| `limit` | `int` | `50` | Maximum number of results |
 
-**Usage:**
-- `provider: AbstractDataProvider`
-- `technical_criteria: dict[str, Any] | None = None` — see `screen_by_technicals`.
-- `fundamental_criteria: dict[str, Any] | None = None` — see `screen_stocks`.
-- `universe: str = "sp500"`
-- `limit: int = 50`
-- Returns: `pd.DataFrame`. Empty if fundamental criteria are given but no symbol
-  passes them; if only fundamental criteria are given, returns those results
-  directly (no `rsi`/`volume_ratio` columns); if only technical criteria are given,
-  returns the technical screen's own columns.
+#### Returns
 
-Agent-facing wrapper (`screen_combined_tool`) takes both criteria as optional JSON
-strings, defaults `limit=20`, runs under a 120s timeout, and returns "No stocks
-matched the combined criteria." when empty.
+A table with one row per stock that passed all criteria. Columns include: `symbol`, `price`, `rsi`, `volume_ratio`. The `rsi` and `volume_ratio` columns show the current values for those indicators, regardless of whether you filtered on them.
 
-```python
-df = await screen_combined(
-    provider,
-    fundamental_criteria={"roe_gt": 0.15, "debt_equity_lt": 1.0},
-    technical_criteria={"rsi_lt": 35},
-    universe="sp500", limit=20,
-)
-```
+#### Design Notes
+
+- **Batch-download approach** — by downloading the entire universe's price history in one operation, the screener minimizes API calls and runs much faster than if it downloaded each stock individually. For the S&P 500, this is one batch download instead of 500 individual requests.
+
+- **Pre-filtered symbols** — the `symbols` parameter lets you pass in a list of stocks that were pre-filtered by some other process (for example, the output of a fundamental screen). This is how `screen_combined` chains fundamental and technical filters — it runs the fundamental screen first, then passes the survivors to the technical screen.
+
+- **Unknown criteria** — if you specify a criteria key that the screener doesn't recognize, it logs a warning and treats that criterion as passing (no filtering). This means a typo in a criteria key won't crash the screen, but it also won't filter on that criterion. Always check your results to make sure they make sense.
 
 ---
 
-## screen_vcp_pattern
+## Combined Screening
 
-**Agent-facing tool name:** `screen_vcp_tool`
+### screen_combined
 
-**Purpose:** Scans a universe for Minervini-style Volatility Contraction Patterns
-(VCP) — stocks that had a strong prior uptrend and are now consolidating in a
-tightening, low-volume base above their 200-day moving average, i.e. the classic
-pre-breakout setup used in momentum/growth trading.
+**Agent tool:** `screen_combined_tool`
 
-**Why built this way:** Like the other pattern screens, it batch-downloads 1 year
-of daily OHLCV for the whole universe via `_universe_frames` and evaluates the VCP
-conditions purely from price/volume history — no external pattern-recognition
-library. Each symbol is scored independently and the function requires a full
-year (≥200 bars) of history before it will even attempt evaluation, since the
-"prior advance" and "200-day SMA" checks both need that much lookback; thinly
-traded or newly listed names are silently skipped (return `None` from
-`_vcp_metrics`) rather than causing an error. Results are sorted by tightest
-contraction first, on the theory that the shallowest, most contracted bases are
-closest to breaking out.
+This screen applies both fundamental and technical filters, returning only stocks that pass both. For example, you might want to find profitable, low-debt companies (fundamental) that are also showing technical strength (above their 200-day moving average with bullish MACD).
 
-**Math:** For each symbol, `close` is split into a "base" period (all but the last
-63 trading days, i.e. roughly the first ~9 months of the 1-year window) and a
-"recent" period (last 63 trading days, ~3 months):
+#### How It Works
 
-- `prior_advance = base.max() / base.min() - 1` — the largest peak-to-trough
-  percentage gain within the base period. Must be `>= min_prior_advance_pct`
-  (default **0.30**, i.e. a 30%+ prior advance).
-- `contraction = 1 - recent.iloc[-1] / recent.max()` — how far the current close
-  sits below the recent-period high (a pullback/base depth measure). Must satisfy
-  `0 <= contraction <= max_contraction_pct` (default **0.50**, i.e. current price
-  no more than 50% below its 3-month high, and not currently making a fresh
-  3-month high itself).
-- `sma200 = SMA(close, 200)` — trend filter; current close must be `>` this value
-  (price still in a long-term uptrend).
-- `vol_dryup = mean(volume, last 10 days) / mean(volume, last 60 days)` — must be
-  `< 1.0`, i.e. trading volume over the last two weeks is contracting relative to
-  the last three months (classic VCP volume dry-up as the base tightens).
-- `tightening = std(pct_change(recent), last 10 days) / max(std(pct_change(recent), all 63 days), 1e-9)` —
-  ratio of very-recent daily-return volatility to the 3-month norm; must be
-  `< 1.0`, i.e. price action in the last two weeks is calmer than the 3-month
-  average (contracting volatility, the "V" in VCP).
+1. **Run fundamental screen first** — fundamental filters are cheap (one API call per stock for fundamentals and quote), so they run first with a high internal limit (10,000) to avoid truncating the candidate pool.
 
-All five conditions must hold simultaneously (`passed = advance AND contraction
-AND trend AND vol_dryup AND tightening`). Passing symbols are sorted ascending by
-`contraction_pct` (tightest/shallowest bases first) and truncated to `limit`.
+2. **Pass survivors to technical screen** — only the stocks that passed the fundamental filters are then sent to the technical screen. This is much more efficient than running the technical screen on the entire universe, because technical screens require downloading price history for each stock.
 
-**Usage:**
-- `provider: AbstractDataProvider`
-- `universe: str = "sp500"`
-- `max_contraction_pct: float = 0.50` — maximum pullback from the recent (3-month)
-  high.
-- `min_prior_advance_pct: float = 0.30` — minimum prior uptrend size (first ~9
-  months of the 1-year window).
-- `limit: int = 50`
-- Returns: `pd.DataFrame` with columns `symbol, price, prior_advance_pct,
-  contraction_pct, volume_dryup_ratio, tightening_ratio`, sorted by
-  `contraction_pct` ascending.
+3. **Merge results** — the final result is the intersection of the two screens — stocks that passed both the fundamental and technical filters.
 
-Agent-facing wrapper (`screen_vcp_tool`) exposes only `universe` and `limit`
-(default `limit=20`) — the contraction/advance thresholds are not currently
-tunable from the agent, always using the 0.50/0.30 defaults. Runs under a 120s
-timeout; returns `"No VCP candidates found."` when empty.
+#### Why This Order?
 
-```python
-df = await screen_vcp_pattern(
-    provider, universe="sp500", max_contraction_pct=0.35, min_prior_advance_pct=0.40, limit=20,
-)
-```
+You might wonder why we run the fundamental screen first instead of the technical screen. The reason is efficiency:
+
+- Fundamental screens require one API call per stock (for fundamentals and quote). For the S&P 500, that's 500 API calls.
+- Technical screens require downloading price history for each stock. For the S&P 500, that's a batch download of 500 stocks' price history, which is much more data and takes longer.
+
+By running the fundamental screen first, we typically narrow the universe from 500 stocks down to 50 or 100. Then we only need to download price history for those 50–100 stocks, not all 500. This is much faster and uses less of your data provider's quota.
+
+#### Parameters
+
+| Name | Type | Default | Description |
+|------|------|---------|-------------|
+| `provider` | `AbstractDataProvider` | required | Market data provider |
+| `technical_criteria` | `dict[str, Any] \| None` | `None` | Technical criteria (see `screen_by_technicals`) |
+| `fundamental_criteria` | `dict[str, Any] \| None` | `None` | Fundamental criteria (see `screen_stocks`) |
+| `universe` | `str` | `"sp500"` | Universe to screen |
+| `limit` | `int` | `50` | Maximum number of results |
+
+#### Returns
+
+A table with one row per stock that passed both screens. Columns include all the fundamental columns from `screen_stocks` plus `rsi` and `volume_ratio` from the technical screen.
+
+If you only provide one type of criteria (fundamental or technical), the function returns that single screen's results directly.
 
 ---
 
-## screen_breakout_candidates
+## Pattern Screens
 
-**Agent-facing tool name:** `screen_breakouts_tool`
+Pattern screens look for specific chart patterns that traders believe signal future price movements. These are based on technical analysis theories developed by traders like Mark Minervini (VCP pattern) and William O'Neil (breakouts).
 
-**Purpose:** Finds stocks trading near their 52-week high on above-average volume
-— a simple, well-known momentum/breakout setup (price strength confirmed by
-participation).
+### screen_vcp_pattern
 
-**Why built this way:** Same batch-download-then-locally-evaluate approach as the
-other pattern screens (`_universe_frames`), which keeps the whole-universe scan to
-one network round trip. The lookback for "52-week high" is simply the max close
-over whatever history was fetched (1 year via `get_batch_ohlcv(..., period="1y")`),
-so it needs only 30 bars minimum (a much lower bar than VCP's 200) — a looser,
-faster screen intended for a quick momentum scan rather than a strict base-pattern
-detector. Results are ranked by volume ratio (strongest volume confirmation first)
-rather than by proximity to the high, on the theory that volume expansion is the
-more decisive breakout confirmation signal.
+**Agent tool:** `screen_vcp_tool`
 
-**Math:**
-- `pct_from_high = 1 - close.iloc[-1] / close.max()` over the fetched window (≈52
-  weeks) — must be `<= proximity_to_high_pct` (default **0.05**, i.e. within 5% of
-  the 52-week high).
-- `volume_ratio` = last-day volume ÷ mean(volume, prior 20 days) (via the shared
-  `_volume_ratio` helper, needs ≥21 bars) — must be `>= volume_ratio_min` (default
-  **1.5**, i.e. at least 1.5× average 20-day volume).
-- Both conditions must hold (`pct_from_high <= proximity_to_high_pct AND ratio >=
-  volume_ratio_min`). Sorted descending by `volume_ratio`.
+This screen looks for **Volatility Contraction Patterns (VCP)**, a concept developed by trader Mark Minervini. A VCP is a specific type of consolidation pattern that often precedes a breakout to new highs.
 
-**Usage:**
-- `provider: AbstractDataProvider`
-- `universe: str = "sp500"`
-- `proximity_to_high_pct: float = 0.05` — maximum distance below the 52-week high.
-- `volume_ratio_min: float = 1.5` — minimum last-day volume vs. 20-day average.
-- `limit: int = 50`
-- Returns: `pd.DataFrame` with columns `symbol, price, pct_from_high, volume_ratio`,
-  sorted by `volume_ratio` descending.
+#### What Is a VCP?
 
-Agent-facing wrapper (`screen_breakouts_tool`) exposes the same parameters
-(default `limit=20`), runs under a 120s timeout, and returns `"No breakout
-candidates found."` when empty.
+Imagine a stock that had a strong uptrend over the past 9 months, gaining 30% or more. Now it's consolidating — pulling back from its high, but in a controlled way. The pullback is getting shallower over time (the volatility is contracting), and volume is drying up (fewer shares trading). This is a VCP.
 
-```python
-df = await screen_breakout_candidates(
-    provider, universe="sp500", proximity_to_high_pct=0.03, volume_ratio_min=2.0, limit=20,
-)
-```
+The idea is that the stock is "coiling" like a spring. The strong prior uptrend shows there's demand for the stock. The consolidation with contracting volatility and drying volume shows that sellers are exhausted. When the stock breaks out of this consolidation on high volume, it often runs to new highs.
+
+#### How the Screen Works
+
+For each stock, the screener checks five conditions:
+
+1. **Prior advance** — the stock must have gained at least 30% (default) over the first 9 months of the 1-year window. This ensures we're looking at stocks that had a strong uptrend before the consolidation.
+
+2. **Contraction** — the current pullback from the recent high must be no more than 50% (default). This ensures the consolidation isn't too deep — we're looking for shallow, controlled pullbacks, not crashes.
+
+3. **Trend filter** — the stock must be trading above its 200-day moving average. This ensures we're only looking at stocks in a long-term uptrend.
+
+4. **Volume dry-up** — the average volume over the last 10 days must be less than the average volume over the last 60 days. This shows that selling pressure is easing — fewer people are willing to sell at these prices.
+
+5. **Tightening** — the volatility of daily returns over the last 10 days must be less than the volatility over the last 63 days (3 months). This shows that the price action is calming down — the stock is "coiling."
+
+All five conditions must be met for a stock to be included in the results.
+
+#### Parameters
+
+| Name | Type | Default | Description |
+|------|------|---------|-------------|
+| `provider` | `AbstractDataProvider` | required | Market data provider |
+| `universe` | `str` | `"sp500"` | Universe to screen |
+| `max_contraction_pct` | `float` | `0.50` | Maximum pullback from recent high (50%) |
+| `min_prior_advance_pct` | `float` | `0.30` | Minimum prior uptrend (30%) |
+| `limit` | `int` | `50` | Maximum number of results |
+
+#### Returns
+
+A table with one row per stock that shows a VCP pattern. Columns include: `symbol`, `price`, `prior_advance_pct`, `contraction_pct`, `volume_dryup_ratio`, `tightening_ratio`.
+
+Results are sorted by `contraction_pct` (shallowest pullbacks first), on the theory that the tightest, most contracted bases are closest to breaking out.
+
+#### Design Notes
+
+- **Requires full year of data** — the VCP screen needs at least 200 bars of history to compute the 200-day moving average and assess the prior advance. Stocks with less than 200 days of history are silently skipped.
+
+- **Not agent-tunable** — the agent tool exposes only `universe` and `limit`. The `max_contraction_pct` and `min_prior_advance_pct` thresholds are fixed at their defaults (50% and 30%) when called through the agent. If you want to adjust these thresholds, you need to call the Python function directly.
 
 ---
 
-## screen_oversold_reversal
+### screen_breakout_candidates
 
-**Agent-facing tool name:** `screen_oversold_tool`
+**Agent tool:** `screen_breakouts_tool`
 
-**Purpose:** Finds stocks that have sold off sharply, are technically oversold
-(RSI), and are showing an early reversal candle — a mean-reversion / "buy the dip
-with confirmation" setup rather than blindly buying every oversold reading.
+This screen looks for stocks trading near their 52-week high on above-average volume — a classic momentum/breakout setup.
 
-**Why built this way:** Same batch-download pattern-screen approach as the other
-pattern screens. Requiring both an oversold RSI reading *and* a same-day reversal
-candle (rather than RSI alone) is a deliberate attempt to avoid catching a falling
-knife — RSI alone would flag stocks that are oversold but still trending straight
-down; the reversal-bar confirmation requires the price to have actually turned up
-intraday. Only 30 bars of history are required (much less than VCP), making this a
-fast, broad scan. Sorted by RSI ascending, i.e. the most extremely oversold names
-surface first.
+#### What Is a Breakout?
 
-**Math:**
-- `rsi = wilder_rsi(close)` (14-period, Wilder-smoothed) — must be `< rsi_threshold`
-  (default **30.0**).
-- `decline = 1 - close.iloc[-1] / close.iloc[-126:].max()` — decline from the
-  6-month high (126 trading days ≈ 6 months). Must be `>= min_decline_pct` (default
-  **0.20**, i.e. at least a 20% drawdown from the 6-month high).
-- Reversal-bar confirmation on the most recent bar:
-  - `bar_range = High - Low` of the last bar.
-  - `upper_half = bar_range > 0 AND (Close - Low) / bar_range >= 0.5` — the bar
-    closed in the upper half of its own high/low range.
-  - Also requires `close.iloc[-1] > close.iloc[-2]` — an up day vs. the prior
-    close.
-  - Both must hold: `close_up_day AND upper_half`.
-- All three conditions (oversold RSI, sufficient decline, reversal bar) must hold
-  simultaneously. Sorted ascending by `rsi` (most oversold first).
+A breakout occurs when a stock's price moves above a resistance level (in this case, the 52-week high) on strong volume. The idea is that breaking above a significant high on high volume shows strong buying interest and often leads to further upside.
 
-**Usage:**
-- `provider: AbstractDataProvider`
-- `universe: str = "sp500"`
-- `rsi_threshold: float = 30.0` — maximum RSI-14.
-- `min_decline_pct: float = 0.20` — minimum decline from the 6-month high.
-- `limit: int = 50`
-- Returns: `pd.DataFrame` with columns `symbol, price, rsi, decline_pct`, sorted by
-  `rsi` ascending.
+This screen looks for stocks that are *near* their 52-week high (within 5% by default) and showing volume expansion (at least 1.5x the 20-day average volume by default). These are stocks that are poised to break out or have just broken out.
 
-Agent-facing wrapper (`screen_oversold_tool`) exposes the same parameters (default
-`limit=20`), runs under a 120s timeout, and returns `"No oversold reversal
-candidates found."` when empty.
+#### How the Screen Works
 
-```python
-df = await screen_oversold_reversal(
-    provider, universe="sp500", rsi_threshold=25.0, min_decline_pct=0.25, limit=20,
-)
-```
+For each stock, the screener checks two conditions:
+
+1. **Near high** — the stock's current price must be within 5% (default) of its 52-week high. This ensures we're looking at stocks that are strong, not stocks that have fallen significantly from their highs.
+
+2. **Volume surge** — today's volume must be at least 1.5x (default) the 20-day average volume. This shows that there's unusual buying interest — more people than normal are trading the stock.
+
+Both conditions must be met. Results are sorted by volume ratio (highest first), on the theory that the strongest volume confirmation is the most decisive breakout signal.
+
+#### Parameters
+
+| Name | Type | Default | Description |
+|------|------|---------|-------------|
+| `provider` | `AbstractDataProvider` | required | Market data provider |
+| `universe` | `str` | `"sp500"` | Universe to screen |
+| `proximity_to_high_pct` | `float` | `0.05` | Maximum distance below 52-week high (5%) |
+| `volume_ratio_min` | `float` | `1.5` | Minimum volume vs. 20-day average (1.5x) |
+| `limit` | `int` | `50` | Maximum number of results |
+
+#### Returns
+
+A table with one row per stock that meets the criteria. Columns include: `symbol`, `price`, `pct_from_high`, `volume_ratio`.
+
+Results are sorted by `volume_ratio` (highest first).
+
+---
+
+### screen_oversold_reversal
+
+**Agent tool:** `screen_oversold_tool`
+
+This screen looks for stocks that have sold off sharply, are technically oversold, and are showing an early sign of reversal — a "buy the dip with confirmation" setup.
+
+#### What Is an Oversold Reversal?
+
+When a stock falls sharply, it can become "oversold" — meaning it has fallen too far, too fast, and is due for a bounce. Traders measure this using the RSI indicator — an RSI below 30 is considered oversold.
+
+But buying every oversold stock is dangerous — some oversold stocks keep falling (catching a falling knife). This screen adds a confirmation step: it only includes stocks that are showing an early sign of reversal — a day where the price closes in the upper half of its range and is higher than the previous day's close.
+
+This combination — oversold + sufficient decline + reversal confirmation — identifies stocks that have sold off but are showing early signs of bottoming.
+
+#### How the Screen Works
+
+For each stock, the screener checks three conditions:
+
+1. **Oversold** — the stock's RSI (14-period) must be below 30 (default). This identifies stocks that have fallen sharply and are technically oversold.
+
+2. **Sufficient decline** — the stock must have fallen at least 20% (default) from its 6-month high. This ensures we're looking at stocks that have actually sold off significantly, not just stocks with a low RSI due to normal volatility.
+
+3. **Reversal bar** — the most recent day's price action must show a sign of reversal:
+   - The day's close must be in the upper half of the day's range (close is above the midpoint of high and low)
+   - The day's close must be higher than the previous day's close (an up day)
+
+   This shows that buyers stepped in during the day and pushed the price up from the lows — an early sign that selling pressure is easing.
+
+All three conditions must be met. Results are sorted by RSI (lowest first), so the most extremely oversold stocks appear at the top.
+
+#### Parameters
+
+| Name | Type | Default | Description |
+|------|------|---------|-------------|
+| `provider` | `AbstractDataProvider` | required | Market data provider |
+| `universe` | `str` | `"sp500"` | Universe to screen |
+| `rsi_threshold` | `float` | `30.0` | Maximum RSI-14 (below this = oversold) |
+| `min_decline_pct` | `float` | `0.20` | Minimum decline from 6-month high (20%) |
+| `limit` | `int` | `50` | Maximum number of results |
+
+#### Returns
+
+A table with one row per stock that meets the criteria. Columns include: `symbol`, `price`, `rsi`, `decline_pct`.
+
+Results are sorted by `rsi` (lowest first).
+
+#### Design Notes
+
+- **Reversal confirmation is key** — the reversal bar requirement is what separates this screen from a simple "buy every oversold stock" approach. By requiring the stock to show an actual sign of reversal (up day, close in upper half of range), we avoid catching stocks that are still in free fall.
+
+- **Fast scan** — this screen only requires 30 bars of history (much less than VCP's 200), so it runs quickly even on large universes.
+
+---
+
+## What This Means for You
+
+The screener tools give you the power to search hundreds or thousands of stocks in seconds, filtering down to the ones that match your specific criteria. Whether you're looking for cheap value stocks, strong momentum plays, specific chart patterns, or a combination of factors, the screener can find them.
+
+But remember: a screen is just a starting point. It gives you a list of candidates, not a list of buys. You still need to do your own research — look at the company's business, understand why it passed the screen, check the overall market environment, and decide if it fits your investment strategy and risk tolerance.
+
+The screens are also only as good as the criteria you specify. If you set your thresholds too tight, you might miss good opportunities. If you set them too loose, you'll get too many results to analyze. Experiment with different criteria to find what works for your investment approach.
+
+Finally, be aware that screens are point-in-time snapshots. A stock that passes a momentum screen today might fail it tomorrow if the market reverses. Screens are tools to help you generate ideas, not set-and-forget recommendations. Use them as part of a broader investment process that includes ongoing monitoring and risk management.

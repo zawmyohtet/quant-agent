@@ -1,317 +1,357 @@
-# `quantagent/tools/workflows.py`
+# Workflow Tools
 
-Workflow engine: orchestration only, no analytical math of its own. A
-`Workflow` is an ordered list of `WorkflowStep`s, each naming a function from
-a fixed registry (`STEP_REGISTRY`) plus the parameters to call it with.
-`run_workflow` walks the steps in order, calling each registered tool
-function with the shared `provider` and resolved parameters, and threads
-each step's output forward so later steps can reference it via `$key` /
-`$key.field` placeholders. Built-in workflows are just Python factory
-functions that build one of these `Workflow` objects; custom workflows are
-the same shape loaded from a user's YAML file.
+`quantagent/tools/workflows.py`
+
+Tools for chaining multiple analysis steps into reusable workflows. A workflow is just a sequence of tool calls — run this, then that, then this again — with the output of each step available as input to the next.
+
+Workflows are orchestration only, no analytical math of their own. They let you automate common multi-step analysis routines.
 
 ---
 
-## WorkflowStep / Workflow / WorkflowResult
+## What Is a Workflow?
 
-**Agent-facing tool name:** Not exposed directly — these are the pydantic data
-models that back `list_workflows_tool` and `run_workflow_tool`.
+A workflow is an ordered list of steps. Each step:
+1. Calls a registered tool function (like `get_market_summary` or `screen_stocks`)
+2. Stores the result under a named key (like "market" or "candidates")
+3. Can reference previous results using `$key` or `$key.field` placeholders
 
-**Purpose:** `WorkflowStep` pins one registry tool name, its parameters, and
-an `output_key` under which its result is stored. `Workflow` is an ordered
-list of steps plus metadata (`name`, `description`, `estimated_duration`).
-`WorkflowResult` is the record produced by a run: the workflow name, a
-completion timestamp, a `step_results` dict keyed by each step's
-`output_key`, and a human-readable `summary` string.
+Workflows can be:
+- **Built-in** — pre-defined Python functions (like `daily_market_check`)
+- **Custom** — user-defined YAML files stored at `~/.quantagent/workflows/<name>.yaml`
 
-**Why built this way:** All three models are frozen (`ConfigDict(frozen=True)`)
-so a `Workflow` definition and its results can't be mutated after
-construction — a workflow is a value, not shared mutable state, which
-matters because the same built-in factory can be called repeatedly (e.g. one
-`stock_research` workflow object per symbol) without instances stepping on
-each other. `WorkflowResult` allows `arbitrary_types_allowed` because
-`step_results` can hold arbitrary tool outputs, including pandas DataFrames,
-which pydantic doesn't validate natively.
+Both types execute through the same engine, so custom workflows have the same capabilities as built-in ones.
 
-**Math:** None. Pure data containers.
+---
 
-**Usage:** Constructed directly (`WorkflowStep(tool_name=..., parameters={...},
-output_key=...)`, `Workflow(name=..., steps=[...])`) by the built-in factory
-functions below and by `load_custom_workflow`. Not instantiated by end users
-or agents directly.
+## Built-in Workflows
+
+QuantAgent comes with five pre-defined workflows:
+
+| Workflow | What it does | Target required? |
+|----------|--------------|------------------|
+| `daily_market_check` | Market snapshot, sector performance, rotation, conviction score | No |
+| `weekly_sector_review` | Sector ranking, relative strength, rotation detection | No |
+| `stock_research` | Quote, fundamentals, and news for one stock | Yes (symbol) |
+| `screening_pipeline` | Market regime check, then fundamental screen | No |
+| `portfolio_rebalance_review` | Portfolio risk metrics, then optimization suggestions | Yes (symbols) |
+
+---
+
+## list_workflows
+
+**Agent tool:** `list_workflows_tool`
+
+Lists all available workflows — the five built-ins plus any custom YAML workflows you've created.
+
+### What It Does
+
+Returns a list of workflow names and descriptions you can run. Built-in workflows are listed first, followed by custom workflows in alphabetical order.
+
+### Parameters
+
+None.
+
+### Returns
+
+A list of dictionaries with:
+- `name` — workflow name
+- `type` — "builtin" or "custom"
+- `description` — what the workflow does
+
+### Usage
+
+**Python API:**
+```python
+workflows = list_workflows()
+# [
+#   {"name": "daily_market_check", "type": "builtin", "description": "..."},
+#   {"name": "my_morning_routine", "type": "custom", "description": "..."}
+# ]
+```
+
+**Agent tool:**
+```
+list_workflows_tool()
+```
 
 ---
 
 ## run_workflow
 
-**Agent-facing tool name:** Not exposed directly — invoked internally by the
-`run_workflow_tool` agent tool (`_run_workflow_tool` in
-`quantagent/agent/tools_registry.py`), which wraps its `WorkflowResult` into
-JSON.
+**Agent tool:** `run_workflow_tool`
 
-**Purpose:** Executes a `Workflow`'s steps in sequence against a live data
-provider, passing each step's output forward so subsequent steps can consume
-it.
+Executes a workflow — runs all the steps in sequence and returns the results.
 
-**Why built this way:** Steps run strictly sequentially and synchronously
-with respect to each other (each step is `await`ed before the next begins) —
-later steps in every built-in workflow depend on earlier ones only loosely
-(they mostly reuse the same provider/market context rather than each other's
-literal output), but the engine still guarantees ordering so step N+1 never
-starts before step N's result is recorded. There is no per-step try/except:
-if a step raises, `run_workflow` does not catch it — the exception
-propagates out of `run_workflow` itself, aborting the whole workflow. This is
-a deliberate simplicity choice: a workflow is meant to be a short, curated
-pipeline (built-ins run in under a few minutes), so a broken step should fail
-loudly rather than silently produce a partial, possibly misleading result.
-Progress is reported per step via `report_progress` (step i/total, tool
-name) so long-running workflows (e.g. `screening_pipeline` over an entire
-universe) give visible feedback in the TUI.
+### What It Does
 
-**Math:** No computation here — this is pure control flow:
-1. For each step, look up its `tool_name` in `STEP_REGISTRY`; raise
-   `ValueError` immediately if the name isn't registered (with the full list
-   of valid names in the error message).
-2. Resolve the step's `parameters` dict against prior results: any string
-   parameter value starting with `$` is treated as a reference — `$key`
-   substitutes the entire prior output stored under `output_key == key`;
-   `$key.field` looks up `field` inside that output (which must be a dict).
-   An unresolvable reference raises `ValueError`.
-3. Call the registered function as `await fn(provider, **params)`.
-4. Store the result under `results[step.output_key]`, log a one-line
-   description (`DataFrame (N rows)`, `dict (key1, key2, …)`, `list (N
-   items)`, or the type name) into the running summary.
-5. After all steps complete, return a `WorkflowResult` with the full
-   `step_results` dict and the joined summary lines.
+Takes a workflow name (and optional target), resolves it to a workflow definition, then executes each step in order. Each step's output is stored and made available to subsequent steps via `$key` references.
 
-**Usage:**
+### How It Works
+
+1. **Resolve workflow** — looks up the workflow by name (built-in or custom YAML)
+2. **Validate target** — if the workflow requires a target (like a symbol), checks that one was provided
+3. **Execute steps** — runs each step in sequence:
+   - Look up the tool function in the registry
+   - Resolve any `$key` references in the parameters
+   - Call the function with the resolved parameters
+   - Store the result under the step's `output_key`
+4. **Return results** — returns a `WorkflowResult` with all step outputs and a summary
+
+**Sequential execution:** Steps run one after another, not in parallel. Each step waits for the previous one to complete. This ensures dependencies are satisfied (step 2 can use step 1's output).
+
+**Fail-fast:** If any step raises an exception, the entire workflow aborts. There's no per-step error handling — a broken step should fail loudly rather than silently produce a partial result.
+
+### Parameters
+
+| Name | Type | Description |
+|------|------|-------------|
+| `name` | `str` | Workflow name (built-in or custom) |
+| `target` | `str \| None` | Optional target (symbol or comma-separated symbols) |
+
+### Returns
+
+A `WorkflowResult` with:
+- `name` — workflow name
+- `completed_at` — timestamp
+- `step_results` — dictionary mapping output_key → result
+- `summary` — human-readable summary of what each step produced
+
+### Usage
+
+**Python API:**
 ```python
-workflow = daily_market_check()
-result = await run_workflow(provider, workflow)
-result.step_results["conviction"]   # -> whatever synthesize_conviction returned
-result.summary                       # "- market (get_market_summary): dict (...)\n- ..."
+result = await run_workflow(provider, daily_market_check())
+result.step_results["conviction"]  # conviction score
+result.summary  # "- market (get_market_summary): dict (...)\n- ..."
 ```
 
----
-
-## STEP_REGISTRY
-
-**Agent-facing tool name:** Not exposed — internal lookup table used by
-`run_workflow` and consulted (via its error message) by callers debugging an
-unknown `tool_name`.
-
-**Purpose:** Maps the tool names usable inside a workflow step
-(`step.tool_name`) to the actual async functions that implement them —
-pulled from `market_data`, `market_overview`, `market_breadth`,
-`sector_analysis`, `screener`, `portfolio`, `conviction`, `pair_trading`, and
-`event_analysis`. Every entry has the signature
-`async fn(provider, **kwargs) -> Any`.
-
-**Why built this way:** A closed registry (rather than dynamic import/eval of
-arbitrary function names) means custom YAML workflows can only invoke a
-vetted, provider-first set of functions — this is what makes it safe to let
-users supply their own workflow YAML without risking arbitrary code
-execution.
-
-**Math:** None — a static `dict[str, Callable]`.
-
-**Usage:** Not called directly; reference this dict's keys when writing a
-custom workflow YAML's `tool:` fields.
+**Agent tool:**
+```
+run_workflow_tool(name="daily_market_check")
+run_workflow_tool(name="stock_research", target="AAPL")
+run_workflow_tool(name="portfolio_rebalance_review", target="AAPL,MSFT,GOOGL")
+```
 
 ---
 
 ## daily_market_check
 
-**Agent-facing tool name:** Reached through `run_workflow_tool` with
-`name="daily_market_check"` (no target needed).
+**Agent tool:** `run_workflow_tool(name="daily_market_check")`
 
-**Purpose:** The recurring "how does the market look today" routine: overall
-market snapshot, sector performance, rotation signal, and a final conviction
-score with exposure guidance.
+The recurring "how does the market look today" routine.
 
-**Why built this way:** Steps are ordered from broad to narrow context,
-ending in the synthesis step: market summary and sector ranking establish
-raw context first, sector rotation adds a directional read on top of that,
-and `synthesize_conviction` is placed last because (per its own
-documentation) it fuses regime/breadth/timing/rotation/sentiment signals —
-running it last means it can act as a capstone score assuming the
-provider's other cached/underlying data is already warm from the earlier
-steps in the same request.
+### What It Does
 
-**Math:** No math in this file — it's a fixed 4-step chain:
-1. `get_market_summary` -> `output_key="market"`
-2. `get_sector_performance_ranked` -> `output_key="sectors"`
-3. `detect_sector_rotation` -> `output_key="rotation"`
-4. `synthesize_conviction` -> `output_key="conviction"`
+Runs a comprehensive market check:
+1. Overall market snapshot (indices, timing, breadth, sentiment)
+2. Sector performance ranking
+3. Sector rotation detection
+4. Conviction score with exposure guidance
 
-None of the steps reference each other's outputs via `$key` — each is called
-with no parameters (empty `parameters` dict), so they run independently in
-sequence purely for combined reporting.
+### The Steps
 
-**Usage:** Takes no arguments — `daily_market_check() -> Workflow`. Typical
-call:
+1. `get_market_summary` → output_key: "market"
+2. `get_sector_performance_ranked` → output_key: "sectors"
+3. `detect_sector_rotation` → output_key: "rotation"
+4. `synthesize_conviction` → output_key: "conviction"
+
+**Why this order?** Steps are ordered from broad to narrow context, ending in the synthesis step. The conviction score fuses all the earlier signals, so it runs last to incorporate everything.
+
+### Parameters
+
+None (no target required).
+
+### Usage
+
+**Python API:**
 ```python
-result = await run_workflow(provider, daily_market_check())
+workflow = daily_market_check()
+result = await run_workflow(provider, workflow)
 ```
-Estimated duration: "1-2 minutes".
+
+**Agent tool:**
+```
+run_workflow_tool(name="daily_market_check")
+```
+
+**Estimated duration:** 1-2 minutes.
 
 ---
 
 ## weekly_sector_review
 
-**Agent-facing tool name:** Reached through `run_workflow_tool` with
-`name="weekly_sector_review"` (no target needed).
+**Agent tool:** `run_workflow_tool(name="weekly_sector_review")`
 
-**Purpose:** A slower, sector-focused cadence: rank sectors, quantify their
-relative strength, and detect rotation between them.
+A sector-focused analysis for weekly review.
 
-**Why built this way:** Mirrors the sector portion of `daily_market_check`
-but stands alone (without the broader market-summary/conviction steps) for
-when the user only wants sector-level insight — e.g. a weekly cadence rather
-than daily. Relative strength is computed after ranking so the rotation
-detector has both the raw ranking and the RS view to draw on.
+### What It Does
 
-**Math:** No math in this file — a fixed 3-step chain, all parameterless:
-1. `get_sector_performance_ranked` -> `output_key="ranking"`
-2. `compute_sector_relative_strength` -> `output_key="rs"`
-3. `detect_sector_rotation` -> `output_key="rotation"`
+Drills into sector-level analysis:
+1. Rank sectors by performance
+2. Compute relative strength vs. benchmark
+3. Detect rotation patterns
 
-**Usage:** Takes no arguments — `weekly_sector_review() -> Workflow`.
-Estimated duration: "1-2 minutes".
+### The Steps
+
+1. `get_sector_performance_ranked` → output_key: "ranking"
+2. `compute_sector_relative_strength` → output_key: "rs"
+3. `detect_sector_rotation` → output_key: "rotation"
+
+### Parameters
+
+None (no target required).
+
+### Usage
+
+**Python API:**
+```python
+workflow = weekly_sector_review()
+result = await run_workflow(provider, workflow)
+```
+
+**Agent tool:**
+```
+run_workflow_tool(name="weekly_sector_review")
+```
+
+**Estimated duration:** 1-2 minutes.
 
 ---
 
 ## stock_research
 
-**Agent-facing tool name:** Reached through `run_workflow_tool` with
-`name="stock_research"` and a required `target` (the symbol) —
-`workflow_requires_target("stock_research")` is `True`.
+**Agent tool:** `run_workflow_tool(name="stock_research", target="AAPL")`
 
-**Purpose:** A quick single-symbol deep dive: current quote, fundamentals,
-and recent news for one ticker.
+A quick deep dive on a single stock.
 
-**Why built this way:** Ordered cheapest/most-time-sensitive first (quote),
-then slower-changing structural data (fundamentals), then qualitative
-context (news) — a natural "what is it doing, what is it, why" reading
-order for a human or agent consuming the combined result.
+### What It Does
 
-**Math:** No math — a fixed 3-step chain, all three parameterized with the
-same `symbol`:
-1. `get_quote(symbol=symbol)` -> `output_key="quote"`
-2. `get_fundamentals(symbol=symbol)` -> `output_key="fundamentals"`
-3. `get_news(symbol=symbol)` -> `output_key="news"`
+Gathers comprehensive information on one stock:
+1. Current quote (price, volume, market cap)
+2. Fundamental data (P/E, ROE, debt, etc.)
+3. Recent news headlines
 
-**Usage:**
+### The Steps
+
+1. `get_quote(symbol=symbol)` → output_key: "quote"
+2. `get_fundamentals(symbol=symbol)` → output_key: "fundamentals"
+3. `get_news(symbol=symbol)` → output_key: "news"
+
+**Why this order?** Cheapest/most-time-sensitive first (quote), then slower-changing structural data (fundamentals), then qualitative context (news). A natural "what is it doing, what is it, why" reading order.
+
+### Parameters
+
+| Name | Type | Description |
+|------|------|-------------|
+| `target` | `str` | **Required.** Stock symbol (e.g. "AAPL") |
+
+### Usage
+
+**Python API:**
 ```python
 workflow = stock_research("AAPL")
 result = await run_workflow(provider, workflow)
 ```
-`get_workflow("stock_research", target="aapl")` upper-cases the target
-before calling the factory. Estimated duration: "under 1 minute".
+
+**Agent tool:**
+```
+run_workflow_tool(name="stock_research", target="AAPL")
+```
+
+**Estimated duration:** Under 1 minute.
 
 ---
 
 ## screening_pipeline
 
-**Agent-facing tool name:** Reached through `run_workflow_tool` with
-`name="screening_pipeline"` (no target; screen criteria aren't
-parameterizable through `run_workflow_tool`'s `target` argument — the
-built-in always screens with an empty criteria dict when invoked as an agent
-tool).
+**Agent tool:** `run_workflow_tool(name="screening_pipeline")`
 
-**Purpose:** Establishes market regime context before running a fundamental
-stock screen, so screen results can be read in light of whether the broader
-market favors offense or defense.
+Establishes market context before running a stock screen.
 
-**Why built this way:** Regime is checked first because screening criteria
-(e.g. momentum vs. value tilts) are typically interpreted differently in a
-risk-on vs. risk-off regime — putting `detect_market_regime` before
-`screen_stocks` gives that context to whoever reads the combined result
-without forcing the screen itself to depend on the regime output.
+### What It Does
 
-**Math:** No math — a fixed 2-step chain:
-1. `detect_market_regime` -> `output_key="regime"` (no parameters)
-2. `screen_stocks(criteria=criteria or {})` -> `output_key="candidates"`
+Checks the market regime first, then runs a fundamental screen. This lets you interpret screen results in light of whether the market favors offense or defense.
 
-**Usage:**
+### The Steps
+
+1. `detect_market_regime` → output_key: "regime"
+2. `screen_stocks(criteria=criteria or {})` → output_key: "candidates"
+
+**Why this order?** Regime is checked first because screening criteria (momentum vs. value tilts) are typically interpreted differently in a risk-on vs. risk-off regime. Putting regime first gives context without forcing the screen to depend on it.
+
+### Parameters
+
+None (no target required). Screen criteria are not parameterizable through the agent tool — it always runs with default (empty) criteria.
+
+### Usage
+
+**Python API:**
 ```python
-workflow = screening_pipeline({"min_market_cap": 1e9, "rsi_max": 40})
+workflow = screening_pipeline({"pe_lt": 15, "roe_gt": 0.15})
 result = await run_workflow(provider, workflow)
 ```
-`criteria` defaults to `None` (treated as `{}`, i.e. an unfiltered screen).
-Estimated duration: "2-4 minutes".
+
+**Agent tool:**
+```
+run_workflow_tool(name="screening_pipeline")
+```
+
+**Estimated duration:** 2-4 minutes.
 
 ---
 
 ## portfolio_rebalance_review
 
-**Agent-facing tool name:** Reached through `run_workflow_tool` with
-`name="portfolio_rebalance_review"` and a required `target` (comma-separated
-symbols) — `workflow_requires_target("portfolio_rebalance_review")` is
-`True`.
+**Agent tool:** `run_workflow_tool(name="portfolio_rebalance_review", target="AAPL,MSFT,GOOGL")`
 
-**Purpose:** A portfolio health check: current risk metrics for an assumed
-equal-weight holding, followed by max-Sharpe optimization suggestions for
-the same symbol set.
+A portfolio health check with optimization suggestions.
 
-**Why built this way:** Since the tool only receives a symbol list (not
-actual position sizes), it assumes equal weighting (`1/len(symbols)`,
-rounded to 4 decimals) as a neutral baseline for the risk-metrics step, then
-runs true optimization afterward so the user can compare "if I were
-equal-weight, here's my risk" against "here's what an optimizer would
-recommend instead."
+### What It Does
 
-**Math:** No math in this file itself (the risk/optimization math lives in
-`quantagent.tools.portfolio`) — a fixed 2-step chain:
-1. `compute_portfolio_metrics(weights=weights)` -> `output_key="risk"`, where
-   `weights = {SYM.upper(): round(1/len(symbols), 4) for sym in symbols}`
-2. `optimize_portfolio(symbols=[s.upper() for s in symbols])` ->
-   `output_key="optimization"`
+Analyzes a portfolio's current risk profile, then suggests an optimized allocation:
+1. Compute risk metrics (beta, VaR, tracking error) for equal-weight allocation
+2. Run max-Sharpe optimization to suggest better weights
 
-**Usage:**
+### The Steps
+
+1. `compute_portfolio_metrics(weights=equal_weights)` → output_key: "risk"
+2. `optimize_portfolio(symbols=symbols, method="max_sharpe")` → output_key: "optimization"
+
+**Why equal weight first?** The tool only receives a symbol list, not actual position sizes, so it assumes equal weighting as a neutral baseline. Then it runs optimization so you can compare "if I were equal-weight, here's my risk" against "here's what an optimizer would recommend."
+
+### Parameters
+
+| Name | Type | Description |
+|------|------|-------------|
+| `target` | `str` | **Required.** Comma-separated symbols (e.g. "AAPL,MSFT,GOOGL") |
+
+### Usage
+
+**Python API:**
 ```python
-workflow = portfolio_rebalance_review(["aapl", "msft", "googl"])
+workflow = portfolio_rebalance_review(["AAPL", "MSFT", "GOOGL"])
 result = await run_workflow(provider, workflow)
 ```
-`get_workflow("portfolio_rebalance_review", target="aapl,msft,googl")` splits
-the comma-separated target and strips whitespace before calling the factory.
-Estimated duration: "1-2 minutes".
+
+**Agent tool:**
+```
+run_workflow_tool(name="portfolio_rebalance_review", target="AAPL,MSFT,GOOGL")
+```
+
+**Estimated duration:** 1-2 minutes.
 
 ---
 
-## load_custom_workflow
+## Custom Workflows
 
-**Agent-facing tool name:** Not exposed directly — called by `get_workflow`
-as the fallback when `name` isn't a built-in, so it's reachable indirectly
-through `run_workflow_tool`.
+You can define your own workflows in YAML files stored at `~/.quantagent/workflows/<name>.yaml`.
 
-**Purpose:** Reads a user-authored workflow definition from
-`~/.quantagent/workflows/<name>.yaml` and validates/parses it into a
-`Workflow` object.
+### YAML Format
 
-**Why built this way:** Lets users define their own routines without
-touching Python — a YAML file with a `steps:` list of `{tool, parameters,
-output_key}` entries, matched against the same `STEP_REGISTRY` used by
-built-ins, so custom and built-in workflows execute through the identical
-`run_workflow` code path (no special-casing at run time).
-
-**Math:** No math — file I/O and validation:
-1. Look up `<name>.yaml` under `workflows_dir()` (`~/.quantagent/workflows/`
-   by default, overridable via `QUANTAGENT_HOME`); raise `ValueError` if the
-   file doesn't exist.
-2. `yaml.safe_load` the file.
-3. Build a `WorkflowStep` per entry in `steps:`, reading `tool` ->
-   `tool_name`, `parameters` (default `{}`), `output_key` (required, raises
-   `KeyError`-derived failure if absent since it's accessed with `[...]`
-   rather than `.get`).
-4. Raise `ValueError` if the resulting step list is empty.
-5. Return a `Workflow` using the YAML's `name` (defaulting to the filename
-   stem), `description`, `estimated_duration`, and the parsed steps.
-
-**Usage:** Example `~/.quantagent/workflows/my_morning_routine.yaml`:
 ```yaml
 name: my_morning_routine
 description: "My personal morning market review"
+estimated_duration: "2-3 minutes"
 steps:
   - tool: get_market_summary
     parameters: {}
@@ -319,107 +359,98 @@ steps:
   - tool: screen_oversold_reversal
     parameters: {rsi_threshold: 35}
     output_key: candidates
+  - tool: get_news
+    parameters: {symbol: $candidates.symbol, days: 7}
+    output_key: news
 ```
-Then in Python: `load_custom_workflow("my_morning_routine")`, or via the
-agent tool: run workflow `my_morning_routine` (no target needed unless a
-step's parameters reference one).
 
----
+### Step Fields
 
-## list_workflows
+Each step has three fields:
+- `tool` — the tool function name (must be in `STEP_REGISTRY`)
+- `parameters` — dictionary of parameters (can reference previous outputs with `$key`)
+- `output_key` — name to store the result under (must be unique within the workflow)
 
-**Agent-facing tool name:** `list_workflows_tool` (via `_list_workflows_tool`
-in `tools_registry.py`).
+### Parameter References
 
-**Purpose:** Enumerates every workflow the user can currently run — the five
-built-ins plus any custom YAML files found under `~/.quantagent/workflows/`.
+You can reference previous step outputs using `$key` syntax:
+- `$key` — the entire output of the step with output_key "key"
+- `$key.field` — a specific field from that output (if it's a dict)
 
-**Why built this way:** Returns a flat list of plain dicts (not `Workflow`
-objects) so it's trivially JSON-serializable for the agent tool layer, and
-tolerates unreadable/malformed custom YAML files (catching `OSError` and
-`yaml.YAMLError` per file) so one broken custom workflow file doesn't break
-discovery of the others.
-
-**Math:** No math — enumeration logic:
-1. For each name in `BUILTIN_WORKFLOWS`, emit `{"name": name, "type":
-   "builtin", "description": factory.__doc__ or ""}` (the description is the
-   factory function's docstring, e.g. `"Daily market review capped by the
-   conviction synthesis."`).
-2. For each `*.yaml` file under `workflows_dir()` (sorted by filename), try
-   to read its `description:` field (empty string on read/parse failure) and
-   emit `{"name": <filename stem>, "type": "custom", "description": ...}`.
-3. Return builtins followed by customs.
-
-**Usage:**
-```python
-list_workflows()
-# -> [{"name": "daily_market_check", "type": "builtin", "description": "..."},
-#     ..., {"name": "my_morning_routine", "type": "custom", "description": "..."}]
+Example:
+```yaml
+steps:
+  - tool: screen_stocks
+    parameters: {universe: "sp500"}
+    output_key: candidates
+  - tool: get_news
+    parameters: {symbol: $candidates.symbol}  # reference previous output
+    output_key: news
 ```
-Agent-facing call takes no parameters.
 
----
+### Loading Custom Workflows
 
-## get_workflow
+Custom workflows are loaded automatically when you run them by name. You don't need to register them — just create the YAML file and run it.
 
-**Agent-facing tool name:** Not exposed directly — called internally by
-`run_workflow_tool` (`_run_workflow_tool`) to resolve the `name`/`target`
-arguments it receives into an actual `Workflow` before calling
-`run_workflow`.
-
-**Purpose:** Single entry point that resolves a workflow by name, whether
-built-in (optionally parameterized by `target`) or custom (loaded from
-YAML), and validates that built-ins requiring a target actually received
-one.
-
-**Why built this way:** Centralizes the "built-in vs. custom" and
-"target-required vs. not" branching in one place so `run_workflow_tool`
-doesn't need to know which workflows need a target or how each built-in
-factory's argument is shaped (symbol string vs. list of symbols) — it just
-passes through whatever `target` string the agent supplied.
-
-**Math:** No math — a small decision tree:
-1. If `name` isn't in `BUILTIN_WORKFLOWS`, delegate entirely to
-   `load_custom_workflow(name)`.
-2. If `name` is in `_TARGET_REQUIRED` (`stock_research`,
-   `portfolio_rebalance_review`) and `target` is empty, raise `ValueError`.
-3. For `stock_research`, call the factory with `target.upper()`.
-4. For `portfolio_rebalance_review`, split `target` on commas, strip each
-   piece, and call the factory with that list.
-5. Otherwise (parameterless built-ins), call the factory with no arguments.
-
-**Usage:**
+**Python API:**
 ```python
-get_workflow("daily_market_check")               # no target needed
-get_workflow("stock_research", target="aapl")     # -> stock_research("AAPL")
-get_workflow("portfolio_rebalance_review", target="aapl, msft")
-get_workflow("my_morning_routine")                 # falls through to custom YAML
+workflow = load_custom_workflow("my_morning_routine")
+result = await run_workflow(provider, workflow)
+```
+
+**Agent tool:**
+```
+run_workflow_tool(name="my_morning_routine")
 ```
 
 ---
 
-## workflow_requires_target
+## STEP_REGISTRY
 
-**Agent-facing tool name:** Not exposed as an agent tool / internal
-infrastructure — used by the TUI (`quantagent/tui/commands.py`,
-`_handle_workflow`) to decide whether the interactive workflow picker should
-prefill an input box awaiting a target (e.g. `/workflow stock_research `)
-rather than submitting immediately.
+**Agent tool:** Not exposed (internal)
 
-**Purpose:** Reports whether a named built-in workflow's factory requires a
-`target` argument to be constructed.
+A dictionary mapping tool names to the actual functions that implement them. This is the "whitelist" of tools that can be used in workflows.
 
-**Why built this way:** A tiny, explicit membership check against a fixed
-set (`_TARGET_REQUIRED = {"stock_research", "portfolio_rebalance_review"}`)
-rather than introspecting factory signatures — keeps the "does this need a
-target" question answerable without importing/calling the factory, which
-matters for UI code that needs the answer before it has a target to pass.
+### What It Does
 
-**Math:** None — `return name in _TARGET_REQUIRED`.
+Maps string names (like "get_market_summary") to async functions. When a workflow step specifies `tool: get_market_summary`, the engine looks up the function in this registry and calls it.
 
-**Usage:**
-```python
-workflow_requires_target("stock_research")            # True
-workflow_requires_target("daily_market_check")         # False
-workflow_requires_target("my_custom_yaml_workflow")    # False (not a builtin)
-```
+### Why a Registry?
+
+A closed registry (rather than dynamic import/eval of arbitrary function names) means custom YAML workflows can only invoke a vetted set of functions. This makes it safe to let users supply their own workflow YAML without risking arbitrary code execution.
+
+### Available Tools
+
+The registry includes tools from:
+- `market_data` — get_ohlcv, get_quote, get_fundamentals, etc.
+- `market_overview` — get_market_summary, get_top_movers, etc.
+- `market_breadth` — detect_market_regime, compute_percent_above_ma, etc.
+- `sector_analysis` — get_sector_performance_ranked, detect_sector_rotation, etc.
+- `screener` — screen_stocks, screen_by_technicals, etc.
+- `portfolio` — optimize_portfolio, compute_portfolio_metrics, etc.
+- `conviction` — synthesize_conviction
+- `pair_trading` — find_cointegrated_pairs, compute_spread_metrics
+- `event_analysis` — analyze_earnings_impact, get_earnings_calendar_range
+
+All functions have the signature `async fn(provider, **kwargs) -> Any`.
+
+---
+
+## Summary
+
+These workflow tools let you chain multiple analysis steps into reusable routines:
+
+- **list_workflows** — see what workflows are available
+- **run_workflow** — execute a workflow
+- **Built-in workflows** — daily_market_check, weekly_sector_review, stock_research, screening_pipeline, portfolio_rebalance_review
+- **Custom workflows** — define your own in YAML
+
+Use workflows to:
+- Automate common multi-step analysis routines
+- Ensure consistent analysis across multiple stocks or portfolios
+- Create reusable templates for your investment process
+- Chain tools together without writing Python code
+
+Remember: workflows are orchestration only — they don't do any analysis themselves, they just call other tools in sequence. The real work happens in the individual tool functions. Workflows just make it easy to run the same sequence of tools over and over.
+
+Custom workflows are especially powerful — they let you define your own analysis routines in YAML without touching Python. Want a workflow that checks the market regime, screens for oversold stocks, and then pulls news on the candidates? Just write a YAML file and run it.

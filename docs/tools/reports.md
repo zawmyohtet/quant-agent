@@ -1,359 +1,439 @@
-# Report Generation
+# Report Generation Tools
 
-`quantagent/tools/reports/` turns the analytical primitives scattered across `tools/technical.py`,
-`tools/market_overview.py`, `tools/sector_analysis.py`, `tools/portfolio.py`, `tools/screener.py`,
-and the data provider into a handful of structured, renderable "reports" — a daily market brief, a
-sector deep-dive, a single-stock deep-dive, a portfolio review, and a screening summary. Each
-generator is a plain composition function: it calls several existing tool functions and packages
-their outputs into an ordered list of `ReportSection`s, which `base.py` renders through shared
-Jinja2 templates into Markdown or a self-contained HTML page.
+`quantagent/tools/reports/`
 
-The layer leans on one deliberate design pattern, `safe_section` (`_shared.py`), to keep a report
-useful even when part of its data is unavailable: each section's builder coroutine is wrapped so
-that an exception downgrades *just that section* to a `_Data unavailable (...)._` placeholder
-instead of aborting the whole report. A report with five sections and one flaky data source still
-renders four good sections and one honest error note, rather than failing outright.
+Tools for generating comprehensive analysis reports that combine multiple data sources and analyses into a single, readable document. Reports are available in both Markdown and HTML formats.
 
-Rendered reports are written to disk under `~/.quantagent/reports/` (`reports_dir()` in
-`quantagent/tools/_paths.py`, overridable via the `QUANTAGENT_HOME` env var), as either
-`<slug>-<timestamp>.md` or `<slug>-<timestamp>.html`.
+---
 
-There are two ways a report gets generated:
+## What Are Reports?
 
-1. **Agent-mediated** — the LLM calls the `generate_report_tool` `@tool` (registered in
-   `quantagent/agent/tools_registry.py`), which dispatches to the right generator, saves the file,
-   and returns a preview to the model.
-2. **Deterministic slash-command bypass** — per `docs/architecture.md` §5.3, `/stock <SYMBOL>
-   report`, `/market report`, and `/sector <name> report` call the matching `reports/` generator
-   *directly from `quantagent/tui/commands.py`*, with no LLM turn involved at all. This is the
-   fast, cheap, "just build the file" path. Screening reports get the same treatment via `/screen
-   ... report`. There is currently no deterministic slash-command form for portfolio reports — they
-   are reachable only through the agent-mediated path (`/report portfolio <symbols>`, which still
-   round-trips through the LLM, or a direct `generate_report_tool` call).
+Reports are structured documents that pull together multiple analyses into a coherent narrative. Instead of running individual tools and manually combining the results, a report generator:
 
-## Report / ReportSection / ReportConfig models
+1. Calls multiple analysis tools in sequence
+2. Packages their outputs into organized sections
+3. Renders everything into a formatted document (Markdown or HTML)
+4. Saves it to disk for review or sharing
 
-Defined in `quantagent/tools/reports/base.py`. All three are frozen (immutable) Pydantic models.
+Reports use **graceful degradation** — if one section fails (e.g. data unavailable), the rest of the report still renders. You get a partial report with an error note in the failed section, rather than no report at all.
 
-- **`ReportConfig`** — options that steer a generator's behavior. Fields: `title: str = ""`
-  (overrides the generator's default auto-title when non-empty), `format: str = "markdown"`
-  (`"markdown"` or `"html"` — informational; the actual output format is determined by which
-  export function the caller invokes), `date_range: str = "1y"` (used by `stock_report.py` for the
-  OHLCV lookback window), `benchmark: str = "SPY"` (used by `sector_report.py` and
-  `portfolio_report.py` for relative-strength / risk comparisons). Every generator accepts
-  `config: ReportConfig | None` and falls back to `ReportConfig()` when omitted.
+---
 
-- **`ReportSection`** — one section of a report: `title: str`, `content: str = ""` (raw Markdown
-  prose, rendered as-is), `tables: list[pd.DataFrame] = []` (rendered separately, after the
-  content). `arbitrary_types_allowed=True` lets the model hold `pd.DataFrame` fields directly.
+## Available Reports
 
-- **`Report`** — the whole document: `title: str`, `generated_at: datetime` (defaults to
-  `datetime.now(UTC)`), `sections: list[ReportSection] = []`, `metadata: dict[str, Any] = {}` (each
-  generator stamps a `type` key here, e.g. `{"type": "stock", "symbol": "AAPL"}`, plus type-specific
-  extras like `sector` or `symbols`).
+| Report | What it covers | Agent tool |
+|--------|----------------|------------|
+| Market Daily | Market overview, regime, timing, breadth, sentiment, sectors, movers | `generate_report_tool(report_type="market")` |
+| Sector Deep-Dive | Sector performance, relative strength, rotation, technicals, industries | `generate_report_tool(report_type="sector", target="Technology")` |
+| Stock Deep-Dive | Quote, technicals, fundamentals, news for one stock | `generate_report_tool(report_type="stock", target="AAPL")` |
+| Portfolio Review | Allocation, risk metrics, sector exposure, optimization, Monte Carlo | `generate_report_tool(report_type="portfolio", target="AAPL,MSFT,GOOGL")` |
+| Screening Summary | Screen parameters, results, and disclaimer | `generate_report_tool(report_type="screening", target="fundamental")` |
 
-**Rendering mechanics.** `_template_context(report)` flattens a `Report` into a plain dict:
-`title`, `generated_at` formatted as `"%Y-%m-%d %H:%M UTC"`, `metadata`, and a `sections` list where
-each `ReportSection` becomes `{title, content, tables_md}` — `tables_md` is each DataFrame run
-through `df_to_markdown()` (a GitHub-style pipe table, no index, capped at 30 rows with an
-"... N more rows omitted." footer; empty frames render as `_No data._`; floats are formatted to 4
-decimal places with trailing zeros stripped).
+---
 
-- `render_markdown(report)` loads `templates/report.md.j2` from a Jinja2
-  `Environment(FileSystemLoader(...), trim_blocks=True, lstrip_blocks=True)` and renders the
-  context directly — the template just walks `sections`, printing `## {title}`, the raw
-  `content`, then each pre-rendered `tables_md` entry.
-- `render_html(report)` additionally runs each section's `content` + `tables_md` through
-  `MarkdownIt("commonmark", {"html": False}).enable("table")` to produce a `section.html` string,
-  then renders `templates/report.html.j2` (a self-contained page: `<title>`, inline `<style>` with
-  `color-scheme: light dark` for automatic dark-mode, one `<h2>`/`<section>` per report section).
-  The Jinja `Environment` itself uses `select_autoescape(["html"])`, but the HTML template embeds
-  pre-rendered content via `{{ section.html | safe }}` (markdown-it output is trusted since it's
-  produced from the report's own content, not raw user input).
+## generate_report_tool
 
-**Export.** `export_report_markdown(report, path)` and `export_report_html(report, path)` both
-`path.parent.mkdir(parents=True, exist_ok=True)` then `path.write_text(...)` the corresponding
-render function's output. Callers (the `generate_report_tool` and the TUI's `_run_report_det`)
-are responsible for choosing `path` — by convention
-`reports_dir() / f"{slug}-{timestamp}.{md|html}"` under `~/.quantagent/reports/`.
+**Agent tool:** `generate_report_tool`
 
-## safe_section (graceful degradation)
+The main entry point for generating reports. Dispatches to the appropriate generator based on `report_type`.
 
-`quantagent/tools/reports/_shared.py` defines the pattern every generator (except
-`screening_report.py`, which has nothing to degrade — see below) uses to assemble sections whose
-underlying data call might fail:
+### What It Does
+
+Takes a report type and optional target, generates the report, saves it to disk, and returns a preview to the agent.
+
+### Parameters
+
+| Name | Type | Description |
+|------|------|-------------|
+| `report_type` | `str` | Report type: "market", "sector", "stock", "portfolio", or "screening" |
+| `target` | `str \| None` | Target (sector name, stock symbol, comma-separated symbols, or screen type) |
+| `criteria` | `str \| None` | JSON string of screen criteria (screening reports only) |
+| `universe` | `str` | Universe for screening (default: "sp500") |
+| `format` | `str` | Output format: "markdown" or "html" (default: "markdown") |
+
+### Returns
+
+A preview of the generated report (first few sections as Markdown).
+
+### Usage
+
+**Agent tool:**
+```
+generate_report_tool(report_type="market")
+generate_report_tool(report_type="stock", target="AAPL")
+generate_report_tool(report_type="sector", target="Technology")
+generate_report_tool(report_type="portfolio", target="AAPL,MSFT,GOOGL")
+generate_report_tool(report_type="screening", target="fundamental", criteria='{"pe_lt": 15}')
+```
+
+---
+
+## Report Models
+
+### ReportConfig
+
+Configuration options for report generation.
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `title` | `str` | `""` | Custom title (overrides auto-generated title) |
+| `format` | `str` | `"markdown"` | Output format ("markdown" or "html") |
+| `date_range` | `str` | `"1y"` | Historical data range (for stock reports) |
+| `benchmark` | `str` | `"SPY"` | Benchmark for comparisons |
+
+### ReportSection
+
+One section of a report.
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `title` | `str` | Section title |
+| `content` | `str` | Markdown content |
+| `tables` | `list[pd.DataFrame]` | Data tables to render |
+
+### Report
+
+The complete report document.
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `title` | `str` | Report title |
+| `generated_at` | `datetime` | Timestamp |
+| `sections` | `list[ReportSection]` | Report sections |
+| `metadata` | `dict` | Additional metadata (type, symbol, etc.) |
+
+---
+
+## safe_section
+
+**Internal helper** (not exposed to agent)
+
+Wraps a section builder to catch exceptions and degrade gracefully.
+
+### What It Does
+
+If a section's data fetch or analysis fails, `safe_section` catches the exception and returns a placeholder section with an error message instead of crashing the entire report.
+
+### How It Works
 
 ```python
-async def safe_section(title: str, builder: Coroutine[Any, Any, ReportSection]) -> ReportSection:
-    report_progress(f"building report section: {title}…")
+async def safe_section(title: str, builder: Coroutine) -> ReportSection:
     try:
         return await builder
     except Exception as exc:
-        logger.warning("Report section '%s' failed: %s", title, exc)
         return ReportSection(title=title, content=f"_Data unavailable ({exc})._")
 ```
 
-Mechanically: the caller passes an **already-created coroutine** (e.g.
-`safe_section("Sector Performance", _sector_section(provider))` — note `_sector_section(provider)`
-is called eagerly to produce the coroutine object, then handed to `safe_section`, which is the one
-that actually `await`s it). `safe_section` reports TUI progress, awaits the coroutine inside a
-broad `except Exception`, and on failure logs a warning and returns a fresh `ReportSection` with
-the *same title* the section was supposed to have but with placeholder content
-`_Data unavailable (<exception message>)._` (italicized Markdown) instead of raising. Because every
-section in a report's `sections` list is built independently — sections that don't need
-`safe_section` (cheap, synchronous, or already-fetched data) are built directly — one section's
-data-provider timeout, missing cache, or bad symbol never prevents the other sections, or the
-`Report` object itself, from being constructed and rendered. The report still gets a title, a
-timestamp, and every other working section; only the failed one degrades in place.
+### Why This Matters
 
-`_shared.py` also has `dict_lines(data, keys=None)`, a small formatter used throughout the
-generators to turn a `dict` into Markdown bullet lines (`- **Key Label:** value`, snake_case keys
-title-cased), with a `_fmt` helper that formats floats to 4 decimals, joins dict values as
-`k=v` pairs, and joins lists with commas (or `"—"` if empty).
+Reports often depend on external data providers, which can be flaky. Without graceful degradation, a single failed API call would prevent the entire report from generating. With `safe_section`, you get a partial report with honest error notes rather than no report at all.
 
-## generate_market_daily
+---
 
-`quantagent/tools/reports/market_report.py`
+## Market Daily Report
 
+**Generator:** `generate_market_daily`
+
+A comprehensive daily market briefing.
+
+### What It Covers
+
+1. **Market Overview** — major indices (SPY, QQQ, DIA, IWM) with trends
+2. **Market Regime & Exposure** — regime score, confidence, recommended exposure
+3. **Timing Signals** — distribution days, follow-through day status
+4. **Breadth** — % of stocks above key moving averages
+5. **Sentiment** — fear & greed score and components
+6. **Sector Performance** — ranked sector returns
+7. **Sector Rotation** — leading/lagging sectors, cycle phase
+8. **Top Movers** — biggest gainers and losers (if cache is warm)
+
+### How It Works
+
+1. Calls `get_market_summary` once to get most of the data
+2. Calls sector analysis tools for sector-specific data
+3. Checks if breadth cache is warm before attempting top movers
+4. Assembles all sections into a report
+5. Renders to Markdown or HTML
+6. Saves to `~/.quantagent/reports/market-<timestamp>.md`
+
+### Usage
+
+**Python API:**
 ```python
-async def generate_market_daily(
-    provider: AbstractDataProvider,
-    config: ReportConfig | None = None,
-) -> Report
+report = await generate_market_daily(provider)
 ```
 
-**Purpose.** The daily market brief: regime, timing, breadth, sentiment, sector performance/
-rotation, and top movers, all off one `get_market_summary` call plus a few extra sector/mover
-fetches.
-
-**Why built this way.** Most of the report (`Market Overview`, `Regime & Exposure`, `Timing
-Signals`, `Breadth`, `Sentiment`) is derived from a single upfront `get_market_summary(provider)`
-call and built synchronously with plain helper functions (`_overview_section`, `_regime_section`,
-`_timing_section`, `_breadth_section`) — these aren't wrapped in `safe_section` because if the one
-summary call fails the whole report can't be built anyway (it's awaited unguarded before section
-assembly starts). The remaining three sections each need their *own* separate calls
-(sector ranking, rotation detection, top movers) and are individually `safe_section`-wrapped so a
-failure in, say, sector rotation detection doesn't take down the sections that already succeeded.
-`_movers_section` additionally checks `BreadthStore().is_warm("sp500")` first and returns a
-"cache cold" placeholder instead of calling `get_top_movers` at all when the breadth cache isn't
-warmed — keeping the brief itself on the fast path (per the docstring: "top movers ... only when
-the breadth cache is warm — the brief itself stays fast-path").
-
-**Sections assembled** (in order):
-1. **Market Overview** — indices + key support/resistance levels, from
-   `market_overview.get_market_summary` (`summary["indices"]`, `summary["key_levels"]`).
-2. **Market Regime & Exposure** — regime label/score/confidence, recommended exposure range, trend/
-   volatility components, from `summary["regime"]` and `summary["recommended_exposure"]`.
-3. **Timing Signals** — distribution-day count/signal, follow-through-day status, from
-   `summary["timing"]`.
-4. **Breadth** — universe/proxy and `% above N-day MA`, from `summary["breadth"]`.
-5. **Sentiment** — raw `summary["sentiment"]` dict via `dict_lines`.
-6. **Sector Performance** (`safe_section`) — `sector_analysis.get_sector_performance_ranked(provider)`.
-7. **Sector Rotation** (`safe_section`) — `sector_analysis.detect_sector_rotation(provider)`.
-8. **Top Movers** (`safe_section`) — `market_overview.get_top_movers(provider, direction="up"/"down", count=5)`,
-   gated on `BreadthStore().is_warm("sp500")`.
-
-**Usage.**
-- Agent tool: `generate_report_tool(report_type="market")` (no `target` needed).
-- Deterministic bypass: `/market report` in the TUI (`_handle_market` → `_run_report_det(app,
-  "market", "", ...)`), which calls `_build_report` directly from `commands.py` with no LLM turn.
-- Parameters: `provider` (injected), optional `config: ReportConfig`.
-- Output: title defaults to `"Market Daily Brief — <YYYY-MM-DD>"`; `metadata={"type":
-  "market_daily"}`; saved under `~/.quantagent/reports/market-<timestamp>.md` (or `.html`).
-
-## generate_sector_report
-
-`quantagent/tools/reports/sector_report.py`
-
-```python
-async def generate_sector_report(
-    provider: AbstractDataProvider,
-    sector: str,
-    config: ReportConfig | None = None,
-) -> Report
+**Agent tool:**
+```
+generate_report_tool(report_type="market")
 ```
 
-**Purpose.** Deep-dive on one GICS sector: performance rank, relative strength vs. a benchmark,
-rotation role, ETF technicals, and industry breakdown.
-
-**Why built this way.** `sector` is fuzzy-matched case-insensitively against `universe.SECTOR_ETFS`
-via `_match_sector`, raising `ValueError` (with the valid-sector list) on no match — this happens
-*before* any section is built, so a bad sector name fails fast rather than producing five degraded
-sections. Every section thereafter is wrapped in `safe_section` since each depends on its own
-provider/analysis call (sector rank tables, RS computation, rotation detection, per-ETF OHLCV +
-technicals, and — per the docstring — industry classification which is "slow on a cold
-classification cache" and therefore especially worth isolating).
-
-**Sections assembled** (in order):
-1. **Performance** — rank and full ranked table from
-   `sector_analysis.get_sector_performance_ranked(provider)`, filtered to the matched sector's row
-   for the `**Rank:** n of N` line.
-2. **Relative Strength** — RS ratio/rank/trend for the sector from
-   `sector_analysis.compute_sector_relative_strength(provider, benchmark=config.benchmark)`.
-3. **Rotation Context** — calls `sector_analysis.detect_sector_rotation(provider)`, then determines
-   the sector's role (`leading`/`lagging`/`improving`/`deteriorating`/`neutral`) by checking which
-   of the returned `*_sectors` lists it appears in.
-4. **Technical Summary** — resolves the sector's ETF via `universe.SECTOR_ETFS[sector]`, fetches
-   1-year OHLCV with `provider.get_ohlcv(etf, period="1y")`, then
-   `technical.summarize_technicals(df)`.
-5. **Industry Breakdown** — `sector_analysis.get_industry_performance(provider, sector)`; renders
-   `_No industry classification data available._` if the resulting DataFrame is empty.
-
-**Usage.**
-- Agent tool: `generate_report_tool(report_type="sector", target="<sector name>")`.
-- Deterministic bypass: `/sector <name> report` (`_handle_sector` → `_run_report_det(app,
-  "sector", sector, ...)`); errors with `Usage: /sector <name> report` if no sector is given.
-- Parameters: `provider` (injected), `sector: str` (must match one of the 11 GICS sectors in
-  `SECTOR_ETFS`, case-insensitive), optional `config: ReportConfig` (`benchmark` used for RS).
-- Output: title defaults to `"<Sector> Sector Report — <YYYY-MM-DD>"`; `metadata={"type":
-  "sector", "sector": matched}`; saved under `~/.quantagent/reports/sector-<name>-<timestamp>.md`.
-
-## generate_stock_report
-
-`quantagent/tools/reports/stock_report.py`
-
-```python
-async def generate_stock_report(
-    provider: AbstractDataProvider,
-    symbol: str,
-    config: ReportConfig | None = None,
-) -> Report
+**Slash command (deterministic, no LLM):**
+```
+/market report
 ```
 
-**Purpose.** A single-stock deep dive: quote/classification overview, technical read, fundamentals,
-and recent news.
+---
 
-**Why built this way.** `symbol` is upper-cased up front; all four sections are `safe_section`-
-wrapped since each hits the data provider independently (quote+classification, OHLCV, fundamentals,
-news) and any one endpoint being unavailable for a given symbol shouldn't blank the whole report.
-Per the docstring, DCF/F-Score valuation tools are deliberately *not* auto-run here — they need
-inputs (FCF projections, balance-sheet history) that a generic report can't assume/guess, so
-they're left to be called explicitly (by the agent or the user) rather than folded in.
+## Sector Report
 
-**Sections assembled** (in order):
-1. **Company Overview** — `provider.get_quote(symbol)` (price, change %, market cap, volume, 52-
-   week high/low) and `provider.get_industry_classification(symbol)` (sector/industry), merged via
-   `dict_lines`.
-2. **Technical Analysis** — `provider.get_ohlcv(symbol, period=config.date_range)`, then
-   `technical.summarize_technicals(df)`, `technical.detect_support_resistance(df)` (key levels),
-   `technical.wilder_rsi(df["Close"])` (RSI-14), and
-   `technical.detect_patterns(df.iloc[-30:])` (candlestick patterns over the last 30 bars — only
-   the most recent 3 are listed, e.g. `"bullish_engulfing (2024-05-01)"`).
-3. **Fundamental Analysis** — `provider.get_fundamentals(symbol)` via `dict_lines`.
-4. **Recent News** — `provider.get_news(symbol, days=7)`, tabulated (date/title/source, first 10
-   items) or `_No news in the last 7 days._` if empty.
+**Generator:** `generate_sector_report`
 
-**Usage.**
-- Agent tool: `generate_report_tool(report_type="stock", target="<SYMBOL>")`.
-- Deterministic bypass: `/stock <SYMBOL> report` (`_handle_stock` → `_run_report_det(app,
-  "stock", symbols[0], ...)`).
-- Parameters: `provider` (injected), `symbol: str` (upper-cased internally), optional `config:
-  ReportConfig` (`date_range` sets the OHLCV lookback, default `"1y"`).
-- Output: title defaults to `"<SYMBOL> Deep Dive — <YYYY-MM-DD>"`; `metadata={"type": "stock",
-  "symbol": symbol}`; saved under `~/.quantagent/reports/stock-<symbol>-<timestamp>.md`.
+A deep dive into a specific market sector.
 
-## generate_portfolio_report
+### What It Covers
 
-`quantagent/tools/reports/portfolio_report.py`
+1. **Performance** — sector rank and returns across timeframes
+2. **Relative Strength** — RS ratio vs. benchmark, trend
+3. **Rotation Context** — is the sector leading, lagging, improving, or deteriorating?
+4. **Technical Summary** — sector ETF technicals (trend, momentum, volatility)
+5. **Industry Breakdown** — industries within the sector, ranked by performance
 
+### How It Works
+
+1. Fuzzy-matches the sector name to one of the 11 GICS sectors
+2. Calls sector analysis tools for performance, RS, and rotation data
+3. Fetches sector ETF price data for technical analysis
+4. Calls industry performance tool for breakdown
+5. Assembles and renders the report
+
+### Parameters
+
+| Name | Type | Description |
+|------|------|-------------|
+| `sector` | `str` | Sector name (e.g. "Technology", "Healthcare") |
+| `config` | `ReportConfig \| None` | Optional configuration |
+
+### Usage
+
+**Python API:**
 ```python
-async def generate_portfolio_report(
-    provider: AbstractDataProvider,
-    symbols: list[str],
-    weights: dict[str, float] | None = None,
-    config: ReportConfig | None = None,
-) -> Report
+report = await generate_sector_report(provider, sector="Technology")
 ```
 
-**Purpose.** A portfolio review: allocation, risk metrics vs. a benchmark, sector exposure, a
-suggested max-Sharpe reallocation, and a Monte Carlo simulation.
-
-**Why built this way.** Symbols are upper-cased and weights normalized to sum to 1 up front via
-`_normalize_weights` (equal-weight when `weights` is omitted; raises `ValueError` if provided
-weights sum to <= 0) — this happens before section assembly so a bad weights input fails fast. The
-`Allocation` section is a pure local computation (no provider call, so no `safe_section` needed);
-the other four each depend on a separate provider/analysis call (portfolio metrics, sector
-classification, optimization, Monte Carlo simulation) and are `safe_section`-wrapped so, e.g., a
-Monte Carlo failure doesn't blank out the risk metrics that already succeeded. The optimization
-section explicitly labels its output "suggestion, not advice."
-
-**Sections assembled** (in order):
-1. **Allocation** — a DataFrame of `{symbol, weight}` built locally from the normalized
-   `weight_map`, sorted descending by weight. No underlying tool call.
-2. **Risk Metrics** (`safe_section`) —
-   `portfolio.compute_portfolio_metrics(provider, weight_map, benchmark=config.benchmark)`.
-3. **Sector Exposure** (`safe_section`) —
-   `sector_analysis.classify_symbols(provider, list(weight_map))`, aggregated into weight-by-sector
-   (unclassified symbols bucket into `"Unknown"`).
-4. **Optimization Suggestion** (`safe_section`) —
-   `portfolio.optimize_portfolio(provider, symbols, method="max_sharpe")`.
-5. **Monte Carlo** (`safe_section`) — `portfolio.monte_carlo_simulation(provider, weight_map)`.
-
-**Usage.**
-- Agent tool: `generate_report_tool(report_type="portfolio", target="<comma-separated symbols>")`
-  (symbols only — the tool wrapper's `_build_report` dispatch does not currently pass custom
-  `weights`, so it always uses equal weighting).
-- Deterministic bypass: **none.** Unlike stock/market/sector/screening, there is no `/portfolio
-  ... report` slash command in `commands.py`; portfolio reports are reachable only through the
-  agent-mediated `/report portfolio <symbols>` picker/prompt or a direct `generate_report_tool`
-  call, both of which still go through an LLM turn.
-- Parameters: `provider` (injected), `symbols: list[str]`, optional `weights: dict[str, float]`
-  (normalized; equal-weight if omitted), optional `config: ReportConfig` (`benchmark` used for
-  risk metrics).
-- Output: title defaults to `"Portfolio Review — <YYYY-MM-DD>"`; `metadata={"type": "portfolio",
-  "symbols": symbols}`; saved under `~/.quantagent/reports/portfolio-<symbols>-<timestamp>.md`.
-
-## generate_screening_report
-
-`quantagent/tools/reports/screening_report.py`
-
-```python
-async def generate_screening_report(
-    provider: AbstractDataProvider,
-    screen_type: str = "fundamental",
-    criteria: dict[str, Any] | None = None,
-    universe: str = "sp500",
-    config: ReportConfig | None = None,
-) -> Report
+**Agent tool:**
+```
+generate_report_tool(report_type="sector", target="Technology")
 ```
 
-**Purpose.** Runs one screen from `tools/screener.py` and packages the matches as a report with
-run parameters and a caution note.
+**Slash command:**
+```
+/sector Technology report
+```
 
-**Why built this way.** This generator does *not* use `safe_section` — there's only one real data
-call (`_run_screen`, dispatched by `screen_type`), and it's awaited directly, unguarded, before any
-section is built; if it raises, the whole report generation fails (there's nothing partial to
-degrade to — a screening report *is* its results). `_run_screen` itself raises `ValueError` for an
-unrecognized `screen_type` with the list of valid types. The three sections are otherwise pure
-local formatting: **Parameters** documents exactly what was run (so the report is self-describing
-even out of context), **Results** renders the matches table or a "no matches" message, and
-**Notes** is a static disclaimer reminding the reader that screen output is candidates, not advice,
-and should be validated with a deep-dive and a market-regime check.
+---
 
-**Sections assembled** (in order):
-1. **Parameters** — screen description (from `_SCREEN_DESCRIPTIONS`), universe, criteria (or
-   `"defaults"`), and match count — built locally, no tool call.
-2. **Results** — the screen's result DataFrame as a table, or `_No stocks matched._` if empty. Fed
-   by whichever of these `tools/screener.py` functions `_run_screen` dispatches to based on
-   `screen_type`:
-   - `"fundamental"` → `screener.screen_stocks(provider, universe=universe, criteria=criteria, limit=50)`
-   - `"technical"` → `screener.screen_by_technicals(provider, criteria or {}, universe=universe)`
-   - `"vcp"` → `screener.screen_vcp_pattern(provider, universe=universe)`
-   - `"breakout"` → `screener.screen_breakout_candidates(provider, universe=universe)`
-   - `"oversold"` → `screener.screen_oversold_reversal(provider, universe=universe)`
-3. **Notes** — static disclaimer text, no tool call.
+## Stock Report
 
-**Usage.**
-- Agent tool: `generate_report_tool(report_type="screening", target="<screen_type>",
-  criteria="<json>", universe="<name>")` (`target` maps to `screen_type`, default
-  `"fundamental"`; `criteria` is a JSON string parsed with `json.loads` when non-empty).
-- Deterministic bypass: `/screen ... report` (`_handle_screen` → `_run_report_det(app,
-  "screening", "fundamental", ...)`) — note the bypass always runs the default `"fundamental"`
-  screen with default criteria on the `"sp500"` universe; free-text criteria and other screen
-  types are only available through the agent-mediated path.
-- Parameters: `provider` (injected), `screen_type: str = "fundamental"` (one of `fundamental |
-  technical | vcp | breakout | oversold`), `criteria: dict | None`, `universe: str = "sp500"`,
-  optional `config: ReportConfig`.
-- Output: title defaults to `"Screening Report (<screen_type>) — <YYYY-MM-DD>"`;
-  `metadata={"type": "screening", "screen_type": screen_type, "universe": universe}`; saved under
-  `~/.quantagent/reports/screening-<screen_type>-<timestamp>.md`.
+**Generator:** `generate_stock_report`
+
+A comprehensive analysis of a single stock.
+
+### What It Covers
+
+1. **Company Overview** — quote, sector/industry classification
+2. **Technical Analysis** — trend, momentum, volatility, support/resistance, patterns
+3. **Fundamental Analysis** — valuation ratios, profitability, growth metrics
+4. **Recent News** — latest headlines with sentiment
+
+### How It Works
+
+1. Fetches quote and classification data
+2. Downloads price history and runs technical analysis
+3. Fetches fundamental data
+4. Fetches recent news
+5. Assembles and renders the report
+
+**Note:** DCF valuation and F-Score are not auto-included because they require specific inputs (FCF projections, balance sheet history) that can't be assumed. Call those tools explicitly if needed.
+
+### Parameters
+
+| Name | Type | Description |
+|------|------|-------------|
+| `symbol` | `str` | Stock ticker |
+| `config` | `ReportConfig \| None` | Optional configuration (date_range controls lookback) |
+
+### Usage
+
+**Python API:**
+```python
+report = await generate_stock_report(provider, symbol="AAPL")
+```
+
+**Agent tool:**
+```
+generate_report_tool(report_type="stock", target="AAPL")
+```
+
+**Slash command:**
+```
+/stock AAPL report
+```
+
+---
+
+## Portfolio Report
+
+**Generator:** `generate_portfolio_report`
+
+A comprehensive portfolio analysis with optimization suggestions.
+
+### What It Covers
+
+1. **Allocation** — current weights (equal-weight if not specified)
+2. **Risk Metrics** — beta, VaR, CVaR, tracking error, information ratio
+3. **Sector Exposure** — how much is in each sector
+4. **Optimization Suggestion** — max-Sharpe optimized weights
+5. **Monte Carlo Simulation** — distribution of possible outcomes
+
+### How It Works
+
+1. Normalizes weights (equal-weight if not provided)
+2. Computes portfolio risk metrics vs. benchmark
+3. Classifies holdings by sector
+4. Runs optimization to suggest better allocation
+5. Runs Monte Carlo simulation for probabilistic outlook
+6. Assembles and renders the report
+
+### Parameters
+
+| Name | Type | Description |
+|------|------|-------------|
+| `symbols` | `list[str]` | List of stock tickers |
+| `weights` | `dict[str, float] \| None` | Optional weights (equal-weight if omitted) |
+| `config` | `ReportConfig \| None` | Optional configuration |
+
+### Usage
+
+**Python API:**
+```python
+report = await generate_portfolio_report(
+    provider,
+    symbols=["AAPL", "MSFT", "GOOGL"],
+    weights={"AAPL": 0.4, "MSFT": 0.35, "GOOGL": 0.25}
+)
+```
+
+**Agent tool:**
+```
+generate_report_tool(report_type="portfolio", target="AAPL,MSFT,GOOGL")
+```
+
+**Note:** There is no deterministic slash command for portfolio reports — they always go through the agent.
+
+---
+
+## Screening Report
+
+**Generator:** `generate_screening_report`
+
+A summary of a stock screen with parameters and results.
+
+### What It Covers
+
+1. **Parameters** — screen type, universe, criteria (self-documenting)
+2. **Results** — table of matching stocks
+3. **Notes** — disclaimer that screen output is candidates, not advice
+
+### How It Works
+
+1. Dispatches to the appropriate screen function based on `screen_type`
+2. Runs the screen with the provided criteria
+3. Packages results into a report with parameters and disclaimer
+
+### Available Screen Types
+
+| Screen Type | Description |
+|-------------|-------------|
+| `fundamental` | Filter by valuation, profitability, growth metrics |
+| `technical` | Filter by technical indicators (RSI, MACD, etc.) |
+| `vcp` | Volatility Contraction Pattern (Minervini) |
+| `breakout` | Stocks near 52-week highs on volume |
+| `oversold` | Oversold stocks showing reversal signs |
+
+### Parameters
+
+| Name | Type | Description |
+|------|------|-------------|
+| `screen_type` | `str` | Screen type (see table above) |
+| `criteria` | `dict \| None` | Screen criteria |
+| `universe` | `str` | Universe to screen (default: "sp500") |
+| `config` | `ReportConfig \| None` | Optional configuration |
+
+### Usage
+
+**Python API:**
+```python
+report = await generate_screening_report(
+    provider,
+    screen_type="fundamental",
+    criteria={"pe_lt": 15, "roe_gt": 0.15},
+    universe="sp500"
+)
+```
+
+**Agent tool:**
+```
+generate_report_tool(
+    report_type="screening",
+    target="fundamental",
+    criteria='{"pe_lt": 15, "roe_gt": 0.15}',
+    universe="sp500"
+)
+```
+
+**Slash command (deterministic, default fundamental screen):**
+```
+/screen report
+```
+
+---
+
+## Report Rendering
+
+Reports can be rendered to Markdown or HTML.
+
+### Markdown
+
+Simple, readable format. Tables are rendered as GitHub-style pipe tables.
+
+```markdown
+## Market Overview
+
+**SPY:** 512.30 (+0.42%) — Trend: up
+**QQQ:** 445.10 (+0.68%) — Trend: up
+...
+```
+
+### HTML
+
+Self-contained HTML page with inline CSS and automatic dark mode support. Tables are rendered as styled HTML tables.
+
+### Rendering Process
+
+1. **Flatten report** — convert Report object to template context
+2. **Render tables** — convert DataFrames to Markdown or HTML tables
+3. **Apply template** — use Jinja2 templates to render the full document
+4. **Write to disk** — save to `~/.quantagent/reports/<slug>-<timestamp>.<ext>`
+
+---
+
+## Summary
+
+These report generation tools create comprehensive analysis documents:
+
+- **Market Daily** — broad market overview with regime, timing, breadth, sentiment, sectors
+- **Sector Report** — deep dive into one sector with performance, RS, rotation, industries
+- **Stock Report** — comprehensive analysis of one stock with technicals, fundamentals, news
+- **Portfolio Report** — portfolio analysis with risk metrics, optimization, Monte Carlo
+- **Screening Report** — screen results with parameters and disclaimer
+
+Use reports to:
+- Get a daily market briefing
+- Deep dive into a specific sector or stock
+- Review your portfolio's risk and optimization opportunities
+- Document screen results for later review
+
+Reports are saved to `~/.quantagent/reports/` and can be opened in any Markdown or HTML viewer. They're a great way to capture your analysis and share it with others.
+
+Remember: reports use graceful degradation — if one section fails, the rest still renders. You get a partial report with honest error notes rather than no report at all. This makes reports robust even when data providers are flaky.

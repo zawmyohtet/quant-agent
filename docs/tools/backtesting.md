@@ -1,153 +1,331 @@
 # Backtesting Tools
 
-`quantagent/tools/backtesting.py` provides vectorized strategy backtesting on top of [vectorbt](https://vectorbt.dev/): a single-run backtest (`run_backtest`), a walk-forward evaluator (`run_walkforward`), a brute-force parameter grid search (`optimize_parameters`), and a markdown formatter for results (`format_backtest_result`). All three data-fetching functions pull OHLCV bars through an `AbstractDataProvider`, turn them into buy/sell signals via `quantagent.tools.technical.generate_signals`, and hand the price series and signals to `vbt.Portfolio.from_signals`, which does the actual trade simulation (fills, commissions, stop-loss/take-profit exits, equity accounting). Only `run_backtest` is currently wired up as an agent-callable tool.
+`quantagent/tools/backtesting.py`
+
+Tools for testing trading strategies against historical data. Before you risk real money on a strategy, you should test it against the past to see how it would have performed. That's what backtesting does — it simulates trading your strategy over historical data and reports the results.
+
+These tools use [vectorbt](https://vectorbt.dev/), a high-performance backtesting library that can simulate thousands of trades in seconds. They handle all the complexity of trade simulation (entries, exits, commissions, stop-losses) so you can focus on the strategy logic.
+
+---
 
 ## run_backtest
 
-**Agent-facing tool name:** `run_backtest_tool`
+**Agent tool:** `run_backtest_tool`
 
-**Purpose:** Runs a single historical backtest of one named strategy against one symbol and reports standard performance/risk metrics (CAGR, Sharpe, Sortino, Calmar, drawdown, win rate, profit factor) so a trader can judge whether a strategy would have worked historically before risking capital on it.
+Runs a single backtest of a trading strategy against a stock's historical data.
 
-**Why built this way:**
-- Uses `vbt.Portfolio.from_signals` instead of a hand-rolled bar-by-bar loop because vectorbt vectorizes the entire simulation (entries/exits, commission deduction, stop-loss/take-profit exits, trade and drawdown accounting) in one call — it is fast, well-tested, and avoids re-implementing fragile trade-lifecycle bookkeeping.
-- Raises `ValueError` early if fewer than 50 bars are available (`len(df) < 50`), since performance ratios computed on very short histories are statistically meaningless.
-- `stop_loss_pct` / `take_profit_pct` are converted to `np.nan` when unset (`config.stop_loss_pct if ... else np.nan`) because vectorbt's `sl_stop`/`tp_stop` parameters treat `NaN` as "no stop configured" rather than a valid distance.
-- `BacktestResult` is a **frozen** (`ConfigDict(frozen=True)`) pydantic model — once a backtest completes, its metrics cannot be mutated in place, which matters for an agent that may hand the same result to multiple downstream consumers (report generation, chat formatting) without risking accidental tampering.
-- All numeric fields are rounded to 4 decimal places at construction time, giving stable, deterministic string output regardless of floating-point noise from the underlying computation.
-- **Caveat found in code:** `BacktestConfig.position_size` and `BacktestConfig.custom_signals` are declared fields but are never read anywhere in `run_backtest` (or `run_walkforward`/`optimize_parameters`) — they currently have no effect on the simulation. `vbt.Portfolio.from_signals` is always called with full-equity sizing; these fields appear to be reserved for future functionality.
+### What It Does
 
-**Math:**
-- `total_return = pf.total_return()` — vectorbt's cumulative return over the whole equity curve: `final_portfolio_value / initial_cash - 1`.
-- `n_years = len(pf.returns()) / 252` (252 = assumed trading days per year).
-- `cagr = (1 + total_return) ** (1 / n_years) - 1` if `n_years > 0`, else `0.0`.
-- `sharpe_ratio = pf.sharpe_ratio()` — vectorbt's annualized Sharpe ratio computed from daily returns with `freq="1d"` (annualization factor 252) and an implicit risk-free rate of 0 (vectorbt default): `mean(daily_returns) / std(daily_returns) * sqrt(252)`.
-- `sortino_ratio = pf.sortino_ratio()` — same annualization (×√252) but the denominator is the downside deviation (standard deviation computed only over returns below the target, 0 by default) instead of the full standard deviation.
-- `calmar_ratio = pf.calmar_ratio()` — annualized return divided by the absolute value of maximum drawdown.
-- `max_drawdown = abs(pf.max_drawdown())` — largest peak-to-trough percentage decline in the equity curve, reported as a positive fraction.
-- `max_drawdown_duration_days = pf.drawdowns.max_duration()` — longest duration (in days, since `freq="1d"`) of any single drawdown episode; converted from a `Timedelta` to `int` days if needed.
-- `win_rate = pf.trades.win_rate()` — winning closed trades ÷ total closed trades.
-- `profit_factor = pf.trades.profit_factor()` — sum of gross winning trade P&L ÷ sum of gross losing trade P&L (absolute value).
-- `annualized_volatility = pf.annualized_volatility()` — `std(daily_returns) * sqrt(252)`.
-- `monthly_returns` — daily returns resampled to month-end (`"ME"`) and compounded per month: `(1 + r).prod() - 1`.
-- `equity_curve = pf.value()` — the portfolio's mark-to-market value time series.
-- `trade_log = pf.trades.records_readable` if `pf.trades.count() > 0`, else an empty `DataFrame`.
+Takes a strategy (like "buy when the 50-day moving average crosses above the 200-day") and a stock (like AAPL), simulates trading that strategy over the past 5 years, and reports how it would have performed.
 
-**Usage:**
+The tool answers questions like:
+- What would my total return have been?
+- What's the Sharpe ratio (risk-adjusted return)?
+- What was the maximum drawdown (worst peak-to-trough decline)?
+- How many trades would I have made?
+- What was my win rate?
 
-Input is a `BacktestConfig`:
+### How It Works
 
-| Field | Type | Default | Notes |
-|---|---|---|---|
-| `symbol` | `str` | required | Ticker to backtest. |
-| `strategy` | `str` | required | One of `sma_crossover`, `ema_crossover`, `rsi_mean_reversion`, `macd_momentum`, `bollinger_breakout`, `buy_and_hold` (per `generate_signals`'s strategy dispatch). |
-| `period` | `str` | `"5y"` | History window fetched from the provider (agent docstring suggests `1y`, `2y`, `5y`, `10y`). |
-| `initial_capital` | `float` | `100_000.0` | Starting cash for the simulation. |
-| `commission` | `float` | `0.001` | Passed to vectorbt as `fees` (fraction per trade, e.g. 0.001 = 10 bps). |
-| `position_size` | `float` | `1.0` | **Currently unused** by the backtest logic (see caveat above). |
-| `stop_loss_pct` / `take_profit_pct` | `float \| None` | `None` | Passed to vectorbt as `sl_stop`/`tp_stop`; `None` → `np.nan` (no stop). |
-| `custom_signals` | `pd.Series \| None` | `None` | **Currently unused** by the backtest logic. |
+1. **Download price history** — fetches historical OHLCV data for the stock
+2. **Generate signals** — converts the strategy into buy/sell signals for each day
+3. **Simulate trades** — uses vectorbt to simulate the trades (entries, exits, commissions, stop-losses)
+4. **Calculate metrics** — computes performance and risk metrics from the simulated equity curve
+5. **Return results** — gives you a comprehensive report
 
-Returns a frozen `BacktestResult`:
+### Available Strategies
 
-`symbol`, `strategy`, `period`, `cagr`, `sharpe_ratio`, `sortino_ratio`, `calmar_ratio`, `max_drawdown`, `max_drawdown_duration_days` (int), `win_rate`, `total_trades` (int), `profit_factor`, `total_return`, `annualized_volatility`, `equity_curve` (`pd.Series`), `monthly_returns` (`pd.Series`), `trade_log` (`pd.DataFrame`), `best_params` (`dict[str, float] | None`, defaults to `None`). `run_backtest` never populates `best_params` — it's only set by `run_walkforward` when a fold was grid-searched (see below).
+The tool supports 6 built-in strategies:
 
-The agent-facing wrapper `run_backtest_tool(symbol, strategy, period="5y")` builds a `BacktestConfig` (uppercasing the symbol), runs `run_backtest`, and returns `format_backtest_result(result)` — a markdown string, not the raw model.
+| Strategy | Description |
+|----------|-------------|
+| `sma_crossover` | Buy when fast SMA crosses above slow SMA, sell when it crosses below |
+| `ema_crossover` | Same as SMA crossover but with exponential moving averages |
+| `rsi_mean_reversion` | Buy when RSI is oversold, sell when overbought |
+| `macd_momentum` | Buy when MACD crosses above signal line, sell when it crosses below |
+| `bollinger_breakout` | Buy when price breaks above upper Bollinger Band, sell when it breaks below lower band |
+| `buy_and_hold` | Buy on day 1 and hold forever (baseline for comparison) |
 
-Example agent call:
+Each strategy has tunable parameters (like the SMA periods or RSI thresholds), but the agent tool uses fixed defaults.
+
+### The Math
+
+The tool computes standard performance metrics:
+
+**Return metrics:**
+- `total_return` — cumulative return over the entire period
+- `cagr` — Compound Annual Growth Rate (annualized return)
+
+**Risk metrics:**
+- `max_drawdown` — largest peak-to-trough decline (as a positive percentage)
+- `max_drawdown_duration_days` — how long the worst drawdown lasted
+- `annualized_volatility` — standard deviation of daily returns, annualized
+
+**Risk-adjusted metrics:**
+- `sharpe_ratio` — return per unit of risk (higher is better)
+- `sortino_ratio` — like Sharpe but only penalizes downside volatility
+- `calmar_ratio` — return divided by max drawdown
+
+**Trade metrics:**
+- `win_rate` — percentage of winning trades
+- `profit_factor` — gross profits / gross losses
+- `total_trades` — number of completed trades
+
+All metrics are computed by vectorbt from the simulated equity curve and trade log.
+
+### Parameters
+
+The tool takes a `BacktestConfig` object with these fields:
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `symbol` | `str` | required | Stock ticker to backtest |
+| `strategy` | `str` | required | Strategy name (see table above) |
+| `period` | `str` | `"5y"` | How much history to test (1y, 2y, 5y, 10y) |
+| `initial_capital` | `float` | `100000` | Starting cash |
+| `commission` | `float` | `0.001` | Commission per trade (0.001 = 0.1%) |
+| `stop_loss_pct` | `float \| None` | `None` | Stop-loss percentage (e.g. 0.05 for 5%) |
+| `take_profit_pct` | `float \| None` | `None` | Take-profit percentage |
+
+### Returns
+
+A frozen `BacktestResult` object with all the metrics listed above, plus:
+- `equity_curve` — the portfolio value over time (as a pandas Series)
+- `monthly_returns` — returns broken down by month
+- `trade_log` — details of every trade (entry/exit dates, prices, P&L)
+
+The agent tool formats this as a markdown table for easy reading.
+
+### Usage
+
+**Python API:**
+```python
+from quantagent.tools.backtesting import run_backtest, BacktestConfig
+
+config = BacktestConfig(
+    symbol="AAPL",
+    strategy="sma_crossover",
+    period="5y",
+    initial_capital=100000,
+    commission=0.001
+)
+result = await run_backtest(provider, config)
+print(f"CAGR: {result.cagr:.2%}")
+print(f"Sharpe: {result.sharpe_ratio:.2f}")
+print(f"Max Drawdown: {result.max_drawdown:.2%}")
+```
+
+**Agent tool:**
 ```
 run_backtest_tool(symbol="AAPL", strategy="sma_crossover", period="5y")
 ```
 
+The agent tool returns a formatted markdown table with the key metrics.
+
+### Design Notes
+
+**Why vectorbt?** Writing a backtester from scratch is hard — you have to handle trade entries/exits, commissions, stop-losses, position sizing, drawdown tracking, and more. vectorbt does all of this in a highly optimized, vectorized way. It's fast, reliable, and well-tested.
+
+**Minimum data requirement.** The tool requires at least 50 bars of data (about 2 months of daily data). Performance metrics on shorter histories are statistically meaningless, so the tool raises an error rather than returning unreliable results.
+
+**Stop-loss/take-profit.** If you specify `stop_loss_pct` or `take_profit_pct`, vectorbt will automatically exit trades when those levels are hit. If they're `None`, no stops are applied. The tool converts `None` to `NaN` internally because that's how vectorbt represents "no stop."
+
+**Frozen results.** The `BacktestResult` is a frozen Pydantic model — once it's created, you can't modify it. This prevents accidental tampering with the results, which is important when the agent is passing results around to different tools.
+
+**Unused fields.** The `BacktestConfig` has `position_size` and `custom_signals` fields, but they're not currently used by the backtest logic. vectorbt always uses full-equity sizing. These fields are reserved for future functionality.
+
+---
+
 ## run_walkforward
 
-**Agent-facing tool name:** Not exposed as an agent tool.
+**Agent tool:** Not exposed to agent
 
-**Purpose:** Intended to validate a strategy's robustness by evaluating it across several non-overlapping historical windows (folds) instead of one full-history backtest, so that performance metrics reflect multiple independent market regimes rather than a single lucky/unlucky period.
+Tests a strategy's robustness by running it across multiple non-overlapping time periods (folds).
 
-**Why built this way:** Each fold is split into a train slice and a test slice
-(`train_end = int(len(split_df) * train_ratio)`). When an optional `param_grid` is supplied, the
-train slice is grid-searched (via `_grid_search`, the same core loop `optimize_parameters` uses,
-factored out so it can run against an in-memory DataFrame instead of fetching its own) and the
-winning parameters are used to generate the test slice's signals — a real train/test split, not
-just "backtest the same strategy on N sequential slices of history." When `param_grid` is omitted
-(the default), each fold still runs `config.strategy` with its hardcoded defaults, and
-`best_params` stays `None` on the result — preserving the original, simpler behavior for callers
-that don't need per-fold optimization. Unlike `run_backtest`, the vectorbt call inside
-`run_walkforward` does not pass `sl_stop`/`tp_stop`, so stop-loss/take-profit from the config are
-not applied in walk-forward runs. Guards against too little data with `len(df) < n_splits * 100`
-(at least 100 bars per fold).
+### What It Does
 
-**Math:**
-- `split_size = len(df) // n_splits` (integer division — any remainder bars beyond `n_splits * split_size` are simply not included in any fold).
-- For fold `i`: `start_idx = i * split_size`, `end_idx = start_idx + split_size`, `split_df = df.iloc[start_idx:end_idx]`.
-- `train_end = int(len(split_df) * train_ratio)`; `test_df = split_df.iloc[train_end:]` is always used for the reported metrics. When `param_grid` is given, `train_df = split_df.iloc[:train_end]` is fed to `_grid_search` (same Cartesian-product grid search described in `optimize_parameters` below) to obtain that fold's `best_params`.
-- Each fold runs `vbt.Portfolio.from_signals(test_signals["Close"], entries, exits, freq="1d", init_cash=config.initial_capital, fees=config.commission)` and is converted to a `BacktestResult` via the same `_portfolio_to_result` helper used by `run_backtest` (same Sharpe/Sortino/Calmar/drawdown formulas described above), with `best_params` attached (or `None` if no grid search ran).
+Instead of testing a strategy on one big chunk of history (like 5 years), walk-forward analysis splits the history into several smaller chunks (folds) and tests the strategy on each one separately.
 
-**Usage:**
+Why? Because a strategy might work great in one market environment (like a bull market) but fail in another (like a bear market). By testing across multiple folds, you get a better sense of whether the strategy is robust or just lucky.
+
+### How It Works
+
+1. **Split history into folds** — e.g. 5 years of data split into 5 folds of 1 year each
+2. **For each fold:**
+   - Split the fold into a training period (70% of the data) and a test period (30%)
+   - If `param_grid` is provided, optimize the strategy's parameters on the training period
+   - Run the strategy with those parameters on the test period
+   - Record the results
+3. **Return results** — one `BacktestResult` per fold
+
+This gives you a more realistic picture of how the strategy would perform in live trading, where you're constantly adapting to new market conditions.
+
+### Parameters
+
+| Name | Type | Default | Description |
+|------|------|---------|-------------|
+| `provider` | `AbstractDataProvider` | required | Your data provider |
+| `config` | `BacktestConfig` | required | Strategy configuration (same as `run_backtest`) |
+| `n_splits` | `int` | `5` | Number of folds |
+| `train_ratio` | `float` | `0.7` | Fraction of each fold used for training |
+| `param_grid` | `dict \| None` | `None` | Parameter grid for optimization (see below) |
+| `metric` | `str` | `"sharpe_ratio"` | Metric to optimize (if `param_grid` is provided) |
+
+### Returns
+
+A list of `BacktestResult` objects, one per fold, in chronological order. Each result includes a `best_params` field showing the optimized parameters for that fold (if `param_grid` was provided).
+
+### Usage
+
+**Python API:**
 ```python
-run_walkforward(
-    provider, config: BacktestConfig, n_splits: int = 5, train_ratio: float = 0.7,
-    param_grid: dict | None = None, metric: str = "sharpe_ratio",
-) -> list[BacktestResult]
+results = await run_walkforward(
+    provider,
+    config=BacktestConfig(symbol="AAPL", strategy="sma_crossover"),
+    n_splits=5,
+    train_ratio=0.7,
+    param_grid={"fast": [10, 20, 50], "slow": [50, 100, 200]},
+    metric="sharpe_ratio"
+)
+for i, result in enumerate(results):
+    print(f"Fold {i+1}: CAGR={result.cagr:.2%}, best_params={result.best_params}")
 ```
-- `n_splits`: number of sequential folds to split history into.
-- `train_ratio`: fraction of each fold reserved as "train".
-- `param_grid`: optional dict of parameter name → list of candidate values (same shape as `optimize_parameters`'s `param_grid`). When given, each fold's train slice is grid-searched and the winning params generate that fold's test signals; when `None`, no optimization happens.
-- `metric`: vectorbt `Portfolio` metric method to maximize during per-fold optimization; ignored when `param_grid` is `None`.
-- Returns a `list[BacktestResult]`, one per fold, in chronological order; each fold's `best_params` is populated only when `param_grid` was supplied.
-- Not reachable from the agent's tool list; must be called directly from Python.
+
+### Design Notes
+
+**Train/test split.** Each fold is split into a training period (for parameter optimization) and a test period (for out-of-sample testing). This prevents overfitting — you optimize on past data, then test on data the optimizer hasn't seen.
+
+**Optional optimization.** If you provide a `param_grid`, the tool will optimize the strategy's parameters on each fold's training period. If you don't provide a grid, it just runs the strategy with its default parameters on each fold.
+
+**No stop-loss/take-profit.** Unlike `run_backtest`, the walk-forward tool doesn't apply stop-loss or take-profit levels. This is a limitation of the current implementation.
+
+**Minimum data requirement.** The tool requires at least 100 bars per fold, so `len(df) >= n_splits * 100`. If you don't have enough data, it will raise an error.
+
+---
 
 ## optimize_parameters
 
-**Agent-facing tool name:** Not exposed as an agent tool.
+**Agent tool:** Not exposed to agent
 
-**Purpose:** Intended to grid-search a strategy's parameters (e.g. moving-average lengths) to find the combination that maximizes a chosen vectorbt performance metric.
+Finds the best parameter values for a strategy by testing every combination in a grid.
 
-**Why built this way:** Grid search (exhaustive `itertools.product` over parameter values) is used
-instead of a smarter optimizer (e.g. Bayesian optimization) presumably for simplicity and
-guaranteed global coverage of a small discrete grid, with per-combo failures caught and logged
-rather than aborting the whole search (`_evaluate_combo` returns `None` on exception,
-`_grid_search` skips it). The core loop is factored out into a synchronous helper, `_grid_search(df,
-config, param_grid, metric) -> dict`, that runs directly against an in-memory DataFrame;
-`optimize_parameters` itself is now a thin wrapper that fetches `df` from the provider, validates
-its length, and delegates to `_grid_search` — this split is what lets `run_walkforward` reuse the
-exact same grid-search logic against each fold's in-memory train slice (see above) without
-re-fetching data per fold. `_evaluate_combo` passes each combo's `params` dict straight into
-`generate_signals(df, config.strategy, params)`, so the sampled parameters do reach the strategy
-functions in `quantagent/tools/technical.py`, each of which reads its own tunable keys out of
-`params` (e.g. `_signal_sma_crossover` reads `fast`/`slow`, falling back to its original
-`50`/`200` defaults if a key is absent).
+### What It Does
 
-**Math:**
-- Builds the Cartesian product of all `param_grid` value lists via `itertools.product(*values)`, zipping each combination back onto `param_grid`'s keys to form a `params` dict per combo.
-- For each combo, runs `vbt.Portfolio.from_signals(signals_df["Close"], entries, exits, freq="1d", init_cash=config.initial_capital, fees=config.commission)` (no stop-loss/take-profit applied here either).
-- `metric_value = float(getattr(pf, metric)())` — dynamically invokes the named zero-argument vectorbt `Portfolio` method (e.g. `pf.sharpe_ratio()`, `pf.total_return()`), so `metric` must be a valid vectorbt Portfolio metric method name.
-- Tracks the running maximum: starts at `best_value = -np.inf`; any combo with `metric_value > best_value` becomes the new best.
-- Requires `len(df) >= 50` bars, else raises `ValueError`.
+Strategies like `sma_crossover` have tunable parameters (like the fast and slow moving average periods). This tool tests every combination of parameters you specify and returns the one that performs best according to a chosen metric (like Sharpe ratio).
 
-**Usage:**
+### How It Works
+
+1. **Build parameter grid** — creates every combination of parameter values (Cartesian product)
+2. **For each combination:**
+   - Generate trading signals using those parameters
+   - Simulate the trades
+   - Calculate the chosen metric (e.g. Sharpe ratio)
+3. **Return the best** — the parameter combination with the highest metric value
+
+### Parameters
+
+| Name | Type | Default | Description |
+|------|------|---------|-------------|
+| `provider` | `AbstractDataProvider` | required | Your data provider |
+| `config` | `BacktestConfig` | required | Strategy configuration |
+| `param_grid` | `dict` | required | Parameter names → lists of values to test |
+| `metric` | `str` | `"sharpe_ratio"` | Metric to maximize |
+
+### Returns
+
+A dictionary with:
+- `best_params` — the optimal parameter combination
+- `best_{metric}` — the metric value for the best parameters
+- `all_results` — results for every parameter combination
+
+### Usage
+
+**Python API:**
 ```python
-optimize_parameters(
-    provider, config: BacktestConfig, param_grid: dict, metric: str = "sharpe_ratio"
-) -> dict
+result = await optimize_parameters(
+    provider,
+    config=BacktestConfig(symbol="AAPL", strategy="sma_crossover"),
+    param_grid={"fast": [10, 20, 50], "slow": [50, 100, 200]},
+    metric="sharpe_ratio"
+)
+print(f"Best params: {result['best_params']}")
+print(f"Best Sharpe: {result['best_sharpe_ratio']:.2f}")
 ```
-- `param_grid`: dict of parameter name → list of candidate values, e.g. `{"fast": [10, 20, 50], "slow": [50, 100, 200]}`. Only the keys each strategy's handler actually reads have an effect (e.g. `sma_crossover`/`ema_crossover` read `fast`/`slow`; `rsi_mean_reversion` reads `length`/`oversold`/`overbought`; `buy_and_hold` reads nothing, so every combo is identical for that strategy — this is expected, not a bug).
-- `metric`: name of a vectorbt `Portfolio` metric method to maximize (default `"sharpe_ratio"`; e.g. `"total_return"` also valid).
-- Returns: `{"best_params": dict, f"best_{metric}": float, "all_results": [{"params": dict, metric: float}, ...]}`.
-- Not reachable from the agent's tool list; must be called directly from Python.
+
+### Design Notes
+
+**Grid search, not smart optimization.** The tool tests every combination in the grid (brute force), not a smarter algorithm like Bayesian optimization. This is simple and guarantees you find the best combination within the grid, but it can be slow for large grids.
+
+**Strategy-specific parameters.** Each strategy reads different parameters from the `param_grid`. For example:
+- `sma_crossover` and `ema_crossover` read `fast` and `slow`
+- `rsi_mean_reversion` reads `length`, `oversold`, and `overbought`
+- `buy_and_hold` doesn't read any parameters (every combination is identical)
+
+If you pass parameters that the strategy doesn't use, they're silently ignored.
+
+**Minimum data requirement.** Like `run_backtest`, this tool requires at least 50 bars of data.
+
+---
 
 ## format_backtest_result
 
-**Agent-facing tool name:** Not exposed as its own agent tool — used internally by `run_backtest_tool` to convert its `BacktestResult` into the string returned to the LLM.
+**Agent tool:** Not exposed (used internally by `run_backtest_tool`)
 
-**Purpose:** Renders a `BacktestResult` as a human-readable markdown table for display in chat/agent output.
+Converts a `BacktestResult` into a human-readable markdown table.
 
-**Why built this way:** Agent tools must return text, not pydantic objects, so formatting is split out as a separate pure function — keeping `run_backtest`'s numeric computation testable independently of presentation. Percentage fields are formatted with `.2%` and ratio fields with `.2f` for readability.
+### What It Does
 
-**Math:** None — pure string formatting, no computation.
+Takes the raw backtest results and formats them as a markdown table that's easy to read in chat or agent output.
 
-**Usage:**
+### How It Works
+
+Creates a markdown header with the symbol, strategy, and period, then a table with rows for each metric:
+- CAGR, Sharpe Ratio, Sortino Ratio, Calmar Ratio
+- Max Drawdown, Max Drawdown Duration
+- Win Rate, Total Trades, Profit Factor
+- Total Return, Annualized Volatility
+- Best Params (if available, from walk-forward optimization)
+
+Percentages are formatted as `XX.XX%`, ratios as `X.XX`.
+
+### Parameters
+
+| Name | Type | Description |
+|------|------|-------------|
+| `result` | `BacktestResult` | The backtest results to format |
+
+### Returns
+
+A markdown string.
+
+### Usage
+
+**Python API:**
 ```python
-format_backtest_result(result: BacktestResult) -> str
+markdown = format_backtest_result(result)
+print(markdown)
 ```
-Produces a markdown header (`## Backtest: {symbol} ({strategy})`, period line) followed by a table with rows: CAGR, Sharpe Ratio, Sortino Ratio, Calmar Ratio, Max Drawdown, Max Drawdown Duration, Win Rate, Total Trades, Profit Factor, Total Return, Annualized Volatility, plus a conditional **Best Params** row appended only when `result.best_params is not None` (i.e. only for walk-forward folds that were grid-searched). Note that `equity_curve`, `monthly_returns`, and `trade_log` are **not** included in this formatted summary — only available on the raw `BacktestResult`.
+
+### Design Notes
+
+**Not all fields are included.** The formatted output doesn't include `equity_curve`, `monthly_returns`, or `trade_log` — those are only available on the raw `BacktestResult` object. The formatted output focuses on the key summary metrics.
+
+**Conditional Best Params row.** If `result.best_params` is not `None` (i.e. the backtest was part of a walk-forward optimization), the output includes a "Best Params" row showing the optimized parameters.
+
+---
+
+## Summary
+
+These backtesting tools let you test trading strategies against historical data before risking real money:
+
+- **run_backtest** — test a strategy on one chunk of history
+- **run_walkforward** — test a strategy across multiple time periods for robustness
+- **optimize_parameters** — find the best parameter values for a strategy
+- **format_backtest_result** — format results for easy reading
+
+Use them in sequence:
+1. Start with `run_backtest` to see if a strategy works at all
+2. Use `optimize_parameters` to find the best parameter values
+3. Use `run_walkforward` to test if the strategy is robust across different market environments
+
+Remember: past performance doesn't guarantee future results. A strategy that worked great in the past might not work in the future. But backtesting gives you a data-driven starting point, which is better than guessing.
