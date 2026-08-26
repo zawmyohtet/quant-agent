@@ -27,6 +27,7 @@ class _MessageEntry:
     content: str
     metadata: dict[str, Any] = field(default_factory=dict)
     timestamp: datetime = field(default_factory=lambda: datetime.now(UTC))
+    extra_class: str | None = None
 
 
 class MessageView(ScrollableContainer):
@@ -62,11 +63,16 @@ class MessageView(ScrollableContainer):
             self._update_dom(entry)
 
     def add_tool_call(self, call_id: str, tool_name: str, args: dict) -> None:
+        # The first tool line after non-tool content opens a new visual group:
+        # it carries a top margin while consecutive tool lines stay compact.
+        prev = self._all_entries[-1] if self._all_entries else None
+        is_group_start = prev is None or prev.kind not in ("tool_start", "tool_done")
         entry = _MessageEntry(
             message_id=call_id,
             kind="tool_start",
             content=f"{tool_name} — running…",
             metadata={"tool_name": tool_name, "args": args, "result": None},
+            extra_class="msg-tool-first" if is_group_start else None,
         )
         self._append_entry(entry)
 
@@ -197,13 +203,16 @@ class MessageView(ScrollableContainer):
             self.scroll_end(animate=False)
 
     def _render_entry(self, entry: _MessageEntry) -> Static:
-        return Static(self._to_renderable(entry), classes=f"msg-{entry.kind}")
+        classes = f"msg-{entry.kind}"
+        if entry.extra_class:
+            classes += f" {entry.extra_class}"
+        return Static(self._to_renderable(entry), classes=classes)
 
     def _to_renderable(self, entry: _MessageEntry) -> RenderableType:
         # Dynamic content (user input, tool output, exception text) is assembled
         # as plain Text so stray "[...]" sequences never parse as Rich markup.
         if entry.kind == "user":
-            return Text.assemble(("You", "bold cyan"), "\n", entry.content)
+            return Text(entry.content)
         if entry.kind == "agent":
             return Markdown(entry.content)
         if entry.kind == "system":
