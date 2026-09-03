@@ -39,6 +39,7 @@ dependencies = [
     "markdown-it-py>=4.0.0",
     "pyyaml>=6.0.3",
     "pydantic-settings>=2.15.0",
+    "openai>=2.54.0",
 ]
 
 [project.scripts]

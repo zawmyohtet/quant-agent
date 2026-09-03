@@ -18,6 +18,7 @@ from quantagent.agent.middleware.approval import ApprovalMiddleware
 from quantagent.agent.middleware.error_logging import ErrorLoggingMiddleware
 from quantagent.agent.middleware.progress import ToolProgressMiddleware
 from quantagent.agent.middleware.summarization import SummarizationMiddleware
+from quantagent.agent.opencode import build_http_clients
 from quantagent.agent.prompts import BASE_SYSTEM_PROMPT
 from quantagent.agent.skills import SkillResolver
 from quantagent.agent.tools_registry import build_tool_registry
@@ -89,6 +90,12 @@ def _create_chat_model(config: QuantAgentConfig) -> Any:
 
     ``zai`` and ``opencode`` are OpenAI-compatible gateways reached through
     langchain-openai with a custom base_url — not native langchain providers.
+
+    ``opencode`` additionally requires an ``x-opencode-session`` header on every
+    request. It is injected by custom httpx clients (see
+    :mod:`quantagent.agent.opencode`) that read the active thread id at send
+    time, so the value follows thread switches without rebuilding the agent and
+    also covers summarization / sub-agent calls.
     """
     model_name, model_provider = _parse_model_string(config.model)
 
@@ -98,12 +105,17 @@ def _create_chat_model(config: QuantAgentConfig) -> Any:
     }
     if model_provider in openai_compatible_gateways:
         api_key, base_url = openai_compatible_gateways[model_provider]
-        return init_chat_model(
-            model=model_name,
-            model_provider="openai",
-            api_key=api_key,
-            base_url=base_url,
-        )
+        kwargs: dict[str, Any] = {
+            "model": model_name,
+            "model_provider": "openai",
+            "api_key": api_key,
+            "base_url": base_url,
+        }
+        if model_provider == "opencode":
+            http_client, http_async_client = build_http_clients()
+            kwargs["http_client"] = http_client
+            kwargs["http_async_client"] = http_async_client
+        return init_chat_model(**kwargs)
 
     return init_chat_model(model_name, model_provider=model_provider)
 

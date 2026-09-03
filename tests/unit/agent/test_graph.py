@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from unittest.mock import patch
 
+import httpx
 import pytest
 
 from quantagent.agent import graph as graph_module
@@ -48,12 +49,15 @@ def test_create_chat_model_opencode_uses_openai_compatible_base_url() -> None:
             QuantAgentConfig(model="opencode:kimi-k3", opencode_api_key="test-opencode-key")
         )
 
-    mock_init.assert_called_once_with(
-        model="kimi-k3",
-        model_provider="openai",
-        api_key="test-opencode-key",
-        base_url="https://opencode.ai/zen/go/v1/",
-    )
+    mock_init.assert_called_once()
+    kwargs = mock_init.call_args.kwargs
+    assert kwargs["model"] == "kimi-k3"
+    assert kwargs["model_provider"] == "openai"
+    assert kwargs["api_key"] == "test-opencode-key"
+    assert kwargs["base_url"] == "https://opencode.ai/zen/go/v1/"
+    # Per-thread x-opencode-session header is injected at the transport layer.
+    assert isinstance(kwargs["http_client"], httpx.Client)
+    assert isinstance(kwargs["http_async_client"], httpx.AsyncClient)
 
 
 def test_create_chat_model_non_zai_passthrough() -> None:

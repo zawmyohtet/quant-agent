@@ -3376,7 +3376,7 @@ wheels = [
 
 [[package]]
 name = "quantagent"
-version = "0.1.4"
+version = "0.1.5"
 source = { editable = "." }
 dependencies = [
     { name = "aiosqlite" },
@@ -3394,6 +3394,7 @@ dependencies = [
     { name = "lxml" },
     { name = "markdown-it-py" },
     { name = "numpy" },
+    { name = "openai" },
     { name = "pandas" },
     { name = "pandas-ta" },
     { name = "polygon-api-client" },
@@ -3446,6 +3447,7 @@ requires-dist = [
     { name = "lxml", specifier = ">=6.1.0" },
     { name = "markdown-it-py", specifier = ">=4.0.0" },
     { name = "numpy", specifier = ">=2.2.6" },
+    { name = "openai", specifier = ">=2.54.0" },
     { name = "pandas", specifier = ">=2.3.3" },
     { name = "pandas-ta", specifier = ">=0.4.71b0" },
     { name = "polygon-api-client", specifier = ">=1.16.3" },
